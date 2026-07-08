@@ -23,6 +23,9 @@ Thumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 
+# 本地说明（含完整路径，不推送到公开仓库）
+README_完整.md
+
 # 临时文件
 *.log
 tmp/

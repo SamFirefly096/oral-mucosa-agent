@@ -1,122 +1,82 @@
-# 口腔黏膜病中西医结合AI诊断Agent系统
+# Oral Mucosa AI Diagnosis Agent
 
-基于 MIRA (Nature 2026) 架构，使用 DeepSeek V4 Pro 大语言模型的自主医疗诊断 Agent。
+基于 **MIRA (Nature 2026)** 架构的口腔黏膜病中西医结合AI诊断系统。使用大语言模型的 Function Calling 能力，实现自主医疗诊断 Agent。
 
 ## 快速启动
 
-### 1. 安装依赖
 ```bash
-pip install openai pydantic python-dotenv tenacity
-```
+# 安装依赖
+pip install -r requirements.txt
 
-### 2. 配置 API Key
-编辑 `.env` 文件，填入 DeepSeek API Key：
-```
-DEEPSEEK_API_KEY=你的key
-```
-（可在 platform.deepseek.com 获取，Cherry Studio 设置中也能找到）
+# 配置 API Key
+cp .env.example .env
+# 编辑 .env，填入 DEEPSEEK_API_KEY
 
-### 3. 初始化数据库
-```bash
-cd 项目目录
+# 初始化数据库
 python -c "from database import create_database; create_database()"
+
+# 运行仿真
+python run_simulation.py --list          # 列出所有病例
+python run_simulation.py --case OLP001   # 单例交互
+python run_simulation.py --all --quiet   # 全量运行
+python evaluate.py                       # 评估结果
 ```
 
-### 4. 运行测试
+## Web 服务
+
 ```bash
-python run_simulation.py --list                    # 列出12个病例
-python run_simulation.py --case OLP001             # 运行单个病例
-python run_simulation.py --all --quiet             # 安静模式全量运行
-python evaluate.py                                 # 评估所有已运行病例
+python app.py
+# 访问 http://localhost:5000（默认密码见 .env）
 ```
+
+提供两种模式：
+- **医学生训练**：模拟真实患者问诊，支持口腔检查/化验/病理/中医四诊等 5 类辅助检查，诊断后自动评分 + 导师点评
+- **患者咨询**：主任医师Agent在线答疑
 
 ## 项目结构
 
 ```
-├── agents.py              # MedAgent + PatientAgent (DeepSeek API)
-├── database.py            # SQLite 数据库 (11张表 + 12例样本)
-├── tools.py               # 8个 Pydantic 工具定义
-├── tool_executors.py      # 工具执行器 (SQLite查询)
-├── conversation.py        # 对话循环引擎
-├── run_simulation.py      # 运行入口 (CLI)
-├── evaluate.py            # 评估脚本
-├── config.py              # 配置管理
-├── .env                   # API Key (需自行填写)
-├── .env.example           # 配置模板
-├── pyproject.toml         # 项目元数据
-├── data/
-│   └── oral_mucosa.db     # 数据库 (12病例含中西医数据)
-├── outputs/
-│   └── conversations/     # 对话记录 (JSON)
-└── _论文/
-    └── 口腔黏膜病AI诊断Agent论文.docx  # 学术论文
+├── agents.py / agents_enhanced.py  # MedAgent + PatientAgent
+├── database.py                     # SQLite 数据库
+├── tools.py / tool_executors.py    # 8个 Function Calling 工具
+├── conversation.py                 # 对话循环引擎
+├── run_simulation.py               # CLI 运行入口
+├── app.py / config.py              # Web 服务 + 配置
+├── wsgi.py                         # 生产入口 (gunicorn/waitress)
+├── Dockerfile / docker-compose.yml # 容器部署
+├── deploy/                         # 部署脚本 + nginx 配置
+├── web/                            # 前端 (index.html + app.js)
+├── data/                           # 数据库文件
+├── outputs/                        # 对话记录 + 评估报告
+└── scripts/                        # 辅助脚本
 ```
 
-## 8个工具
+## 实验架构
 
-| 工具 | 类别 | 功能 |
-|------|------|------|
-| perform_oral_examination | 西医 | 口腔黏膜专科检查 |
-| perform_tcm_four_diagnosis | 中医 | 中医四诊（望闻问切） |
-| order_lab_tests | 西医 | 化验申请（ANA/抗Dsg/血常规等） |
-| order_microbiology | 西医 | 微生物检查（真菌涂片/HSV PCR等） |
-| order_pathology | 西医 | 病理活检（HE+DIF+IIF） |
-| prescribe_medications | 西医 | 西药处方（局部+全身） |
-| prescribe_tcm_formula | 中医 | 中药处方（方剂+煎服法+加减） |
-| finalize_diagnosis | 双重 | 中西医双重诊断+治疗方案 |
+6 组交叉实验（3 类医生 × 2 类患者），累计 285 次独立运行：
 
-## 12个病例
+| 医生 Agent | 患者 Agent |
+|-----------|-----------|
+| LearningMedAgent (经验驱动) | OriginalPatientAgent (条理清晰) |
+| TextbookMedAgent (纯教科书) | RealisticPatientAgent (混乱矛盾) |
+| ChiefMedAgent (融合型双重验证) | |
 
-| ID | 诊断 | 类别 |
-|----|------|------|
-| OLP001 | 糜烂型口腔扁平苔藓 | oral_lichen_planus |
-| ATOLP001 | 萎缩型口腔扁平苔藓 | oral_lichen_planus |
-| PV001 | 寻常型天疱疮 | pemphigus_vulgaris |
-| BP001 | 大疱性类天疱疮 | bullous_pemphigoid |
-| OC001 | 急性假膜型口腔念珠菌病 | oral_candidiasis |
-| RAS001 | 复发性阿弗他口炎 | recurrent_aphthous |
-| HSV001 | 原发性疱疹性龈口炎 | herpes_simplex |
-| DLE001 | 口腔盘状红斑狼疮 | discoid_lupus |
-| EM001 | 重型多形红斑 | erythema_multiforme |
-| ANUG001 | 急性坏死性溃疡性龈炎 | anug |
-| LEUK001 | 口腔白斑 | leukoplakia |
-| LR001 | 苔藓样反应（药源性） | lichenoid_reaction |
+## 部署
 
-## 评估结果
-
-| 维度 | 准确率 |
-|------|:---:|
-| 西医诊断 | 100% (11/11) |
-| 住院决策 | 100% (11/11) |
-| 中医辨证 | ~92% (语义等价) |
-
-## 技术栈
-
-- DeepSeek V4 Pro (Function Calling + Thinking Mode)
-- SQLite (零Docker依赖)
-- Pydantic → JSON Schema (工具定义)
-- OpenAI-compatible API (可无缝切换模型)
-
-## 常见问题
-
-### `python: command not found`
-
-本机 Python 安装在 `C:\Users\admin\AppData\Local\Python\pythoncore-3.14-64\`，但该路径**不在 bash PATH 中**，且 WindowsApps 的 `python.exe` 是 Store 跳转存根（不可用）。
-
-**解决方法**：使用完整路径：
+### Docker
 ```bash
-/c/Users/admin/AppData/Local/Python/pythoncore-3.14-64/python.exe your_script.py
+docker compose up -d
 ```
 
-**为什么 Agent 能自主运行？** MedAgent/PatientAgent 不依赖本地 Python 执行——它们通过 `openai` 库调用 DeepSeek API，推理和 Function Calling 在云端完成。本地 Python 仅用于运行入口脚本 `run_simulation.py`。
+### 裸机
+```bash
+bash deploy/deploy.sh
+```
 
-### Bash 输出不可见
+### GitHub Actions (push 自动部署)
+配置仓库 Secrets：`SSH_HOST` / `SSH_USER` / `SSH_KEY`，推送即部署。
 
-Bash 命令的标准输出经常为空，但文件写操作实际生效。解决方法：`script.py > output.txt 2>&1`，然后用编辑器读 `output.txt`。
+## 参考文献
 
-## 参考
-
-- Ferber D, et al. Towards autonomous medical AI agents. Nature, 2026
+- Ferber D, et al. Towards autonomous medical AI agents. *Nature*, 2026
 - 徐治鸿. 中西医结合口腔黏膜病学. 人民卫生出版社, 2008
-- DeepSeek-AI. DeepSeek-V4 Technical Report. arXiv:2606.19348, 2026
-- 项目论文: `_论文/口腔黏膜病AI诊断Agent论文.docx`
