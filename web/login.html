@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>口腔黏膜病AI诊断Agent — 登录</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Microsoft YaHei',sans-serif;background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);min-height:100vh;display:flex;align-items:center;justify-content:center}
+.card{background:#fff;border-radius:16px;padding:40px;width:90%;max-width:400px;box-shadow:0 20px 60px rgba(0,0,0,.3);text-align:center}
+.card .icon{font-size:48px;margin-bottom:16px}
+.card h2{font-size:20px;color:#1a1a2e;margin-bottom:8px}
+.card p{font-size:13px;color:#888;margin-bottom:24px}
+.card input{width:100%;padding:14px;border:1.5px solid #d0d5dd;border-radius:10px;font-size:16px;text-align:center;letter-spacing:4px;outline:none}
+.card input:focus{border-color:#2563eb}
+.card button{width:100%;padding:14px;margin-top:16px;background:#2563eb;color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer}
+.card button:hover{background:#1d4ed8}
+.card .error{color:#dc2626;font-size:12px;margin-top:8px;display:none}
+</style>
+</head>
+<body>
+<div class="card">
+<div class="icon">&#x1F9B7;</div>
+<h2>口腔黏膜病AI诊断Agent</h2>
+<p>请输入访问密码</p>
+<input type="password" id="pw" placeholder="········" onkeypress="if(event.key==='Enter')login()">
+<button onclick="login()">登 录</button>
+<div class="error" id="err">密码错误，请重试</div>
+</div>
+<script>
+function login(){
+localStorage.setItem('agent_pw',document.getElementById('pw').value);
+window.location.href='/?pw='+document.getElementById('pw').value;
+}
+</script>
+</body>
+</html>
