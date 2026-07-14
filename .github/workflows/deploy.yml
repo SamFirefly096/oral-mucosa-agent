@@ -1,6 +1,6 @@
 # ============================================================
 #  GitHub Actions — 推送即部署
-#  当代码推送到 main 分支时，自动 SSH 到服务器执行更新
+#  当代码推送到 master 分支时，自动 SSH 到服务器执行更新
 #
 #  使用前需要在 GitHub 仓库 Settings → Secrets 中配置:
 #   - SSH_HOST: 云服务器 IP
@@ -42,7 +42,7 @@ jobs:
 
             # 拉取最新代码
             git fetch origin
-            git reset --hard origin/main
+            git reset --hard origin/master
 
             # 安装依赖
             pip3 install -r requirements.txt -q

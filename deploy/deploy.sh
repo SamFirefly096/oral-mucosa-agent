@@ -8,7 +8,7 @@ set -e
 
 APP_DIR="/opt/oral-mucosa-agent"
 REPO_URL="${REPO_URL:-}"  # 如果使用 git 部署，填入仓库地址
-BRANCH="${BRANCH:-main}"
+BRANCH="${BRANCH:-master}"
 
 echo "========================================"
 echo " 口腔黏膜病AI诊断Agent — 首次部署"
