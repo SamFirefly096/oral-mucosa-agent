@@ -7,6 +7,81 @@ import json
 from database import query_table
 
 
+def _search_knowledge(query: str, knowledge_type: str = None, top_k: int = 5) -> list[dict]:
+    """搜索knowledge库——支持模糊匹配和类型过滤"""
+    import sqlite3
+    from pathlib import Path
+    DB = Path(__file__).resolve().parent / "data" / "oral_mucosa.db"
+    conn = sqlite3.connect(str(DB))
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    # 分词搜索：将query拆分为关键词
+    keywords = query.replace("，", ",").replace("、", ",").replace(" ", ",").split(",")
+    keywords = [k.strip() for k in keywords if k.strip()]
+
+    conditions = []
+    params = []
+    for kw in keywords:
+        conditions.append("(content LIKE ? OR title LIKE ? OR disease_relevance LIKE ? OR subcategory LIKE ?)")
+        params.extend([f"%{kw}%"] * 4)
+
+    where = " OR ".join(conditions)
+    sql = f"SELECT * FROM clinical_knowledge WHERE {where}"
+    if knowledge_type:
+        sql += " AND knowledge_type = ?"
+        params.append(knowledge_type)
+
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(top_k)
+
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def execute_search_knowledge(hadm_id: str = "", query: str = "", knowledge_type: str = None, top_k: int = 5, **kwargs) -> str:
+    """搜索临床知识库——按需获取诊疗经验和专家意见"""
+    if not query:
+        return "请提供搜索关键词（如疾病名、症状、治疗方法等）。"
+
+    results = _search_knowledge(query, knowledge_type, top_k)
+
+    if not results:
+        return f"未找到与「{query}」相关的知识条目。建议尝试更宽泛的关键词或不同的表述方式。"
+
+    lines = [
+        f"══════════ 知识库检索结果 ══════════",
+        f"查询：{query}" + (f" | 类型过滤：{knowledge_type}" if knowledge_type else ""),
+        f"找到 {len(results)} 条相关内容：",
+        "",
+    ]
+
+    for i, r in enumerate(results, 1):
+        cat = r.get("knowledge_type", "")
+        sub = r.get("subcategory", "") or ""
+        content = r.get("content", "")
+        src = r.get("source_file", "") or ""
+        disease = r.get("disease_relevance", "") or ""
+
+        # 截断过长内容
+        if len(content) > 300:
+            content = content[:300] + "..."
+
+        lines.append(f"【{i}】[{cat}] {sub}")
+        lines.append(f"  {content}")
+        if disease:
+            lines.append(f"  [相关疾病：{disease}]")
+        if src:
+            lines.append(f"  [来源：{src}]")
+        lines.append("")
+
+    lines.append("══════════════════════════════")
+    lines.append("提示：可根据需要进一步精确搜索或申请其他检查。")
+    return "\n".join(lines)
+
+
 def _fmt_table(name: str, row: dict) -> str:
     """将数据库行格式化为 LLM 可读的文本"""
     if not row:
@@ -82,7 +157,7 @@ def execute_oral_examination(hadm_id: str, **_) -> str:
     """执行口腔检查——查询数据库中的检查结果"""
     exam = query_table("oral_examinations", hadm_id)
     if not exam:
-        return "未找到该患者的检查记录"
+        return "未行该检查"
 
     return _fmt_table("口腔黏膜专科检查结果", exam)
 
@@ -91,7 +166,7 @@ def execute_lab_tests(hadm_id: str, lab_tests: list[str] = None, **kwargs) -> st
     """查询化验结果"""
     lab = query_table("lab_results", hadm_id)
     if not lab:
-        return "未找到该患者的化验结果"
+        return "未行该检查"
 
     # 如果指定了特定项目，只返回那些
     if lab_tests:
@@ -106,7 +181,7 @@ def execute_microbiology(hadm_id: str, micro_tests: list[str] = None, **kwargs) 
     """查询微生物检查结果"""
     micro = query_table("microbiology_results", hadm_id)
     if not micro:
-        return "未找到该患者的微生物检查结果"
+        return "未行该检查"
     return _fmt_table("微生物检查结果", micro)
 
 
@@ -114,7 +189,7 @@ def execute_pathology(hadm_id: str, **kwargs) -> str:
     """查询病理检查结果"""
     path = query_table("pathology_results", hadm_id)
     if not path:
-        return "该患者未进行病理活检或无活检记录"
+        return "未行该检查"
     return _fmt_table("病理检查结果", path)
 
 
@@ -122,27 +197,27 @@ def execute_tcm_four_diagnosis(hadm_id: str, **_) -> str:
     """查询中医四诊结果"""
     tcm = query_table("tcm_four_diagnosis", hadm_id)
     if not tcm:
-        return "未找到该患者的中医四诊记录"
+        return "未行该检查"
 
     lines = [
         "══════════ 中医四诊 ══════════",
         "",
-        "【望诊】",
+        "【望诊】（客观体征，可直接展示）",
         f"  {tcm.get('wang_diagnosis', 'N/A')}",
         f"  舌质：{tcm.get('tongue_body', 'N/A')}",
         f"  舌苔：{tcm.get('tongue_coating', 'N/A')}",
         f"  舌下络脉：{tcm.get('tongue_vein', 'N/A')}",
         "",
-        "【闻诊】",
+        "【闻诊】（客观体征，可直接展示）",
         f"  {tcm.get('wen_diagnosis', 'N/A')}",
-        "",
-        "【问诊】",
-        f"  {tcm.get('wen_inquiry', 'N/A')}",
         "",
         "【切诊】",
         f"  脉象：{tcm.get('pulse_description', 'N/A')}",
         f"  {tcm.get('qie_diagnosis', 'N/A')}",
         "",
+        "──────────────────────────────",
+        "提示：问诊相关内容（寒热、汗出、饮食、二便、睡眠、",
+        "口渴、疼痛性质等）需在对话中向患者询问获取。",
         "══════════════════════════════",
     ]
     return "\n".join(lines)
@@ -208,6 +283,7 @@ def execute_prescribe(hadm_id: str, **kwargs) -> str:
 
 # ── 工具路由表 ──────────────────────────────────────
 FUNC_MAP = {
+    "search_clinical_knowledge": execute_search_knowledge,
     "perform_oral_examination": execute_oral_examination,
     "perform_tcm_four_diagnosis": execute_tcm_four_diagnosis,
     "order_lab_tests": execute_lab_tests,

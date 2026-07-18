@@ -35,7 +35,10 @@ def check_auth():
 
 # Photo mapping: hadm_id -> list of photo subdirectory names
 import glob as _glob
-PHOTO_MAP = {}
+PHOTO_MAP = {
+    "PIM001": ["何小龙（种植体周围黏膜炎）"],
+    "MRS001": ["林强（梅罗综合征）"],
+}
 _ALL_HIDS = [row[0] for row in list_cases()]
 for _f in _glob.glob(PHOTO_DIR + "/*"):
     _name = os.path.basename(_f)
@@ -51,6 +54,14 @@ sessions = {}  # session_id -> {mode, agent, patient_agent, ctx, history}
 def index():
     return send_from_directory("web", "index.html")
 
+@app.route("/app.js")
+def serve_app_js():
+    return send_from_directory("web", "app.js")
+
+@app.route("/login.html")
+def serve_login():
+    return send_from_directory("web", "login.html")
+
 # Anonymized display codes for training mode
 _CASE_CODES = {}
 
@@ -64,24 +75,130 @@ def get_cases():
     """Return list of available patient cases for training mode (diagnosis hidden)."""
     cases = []
     for row in list_cases():
+        hid = row[0]
         cases.append({
-            "id": row[0],
-            "display": _get_display_code(row[0]),
+            "id": hid,
+            "display": _get_display_code(hid),
             "age": row[1],
             "gender": "女" if row[2] == "F" else "男",
             "category": row[4],
+            "has_photos": hid in PHOTO_MAP,
         })
     return jsonify(cases)
+
+@app.route("/api/cases/debug")
+def debug_cases():
+    """Debug endpoint — returns full case info including diagnosis and treatment."""
+    cases = []
+    for row in list_cases():
+        hid = row[0]
+        diag = query_table("diagnoses", hid)
+        tcm = query_table("tcm_diagnoses", hid)
+        treat = query_table("treatments", hid)
+        cc = query_table("chief_complaints", hid)
+        cases.append({
+            "id": hid,
+            "display": _get_display_code(hid),
+            "age": row[1],
+            "gender": "女" if row[2] == "F" else "男",
+            "category": row[4],
+            "diagnosis": diag.get("primary_diagnosis", "") if diag else "",
+            "icd11": diag.get("icd11_code", "") if diag else "",
+            "tcm_syndrome": tcm.get("syndrome_differentiation", "") if tcm else "",
+            "treatment": (treat.get("topical_treatment", "") or "") + "；" + (treat.get("systemic_treatment", "") or "") if treat else "",
+            "chief_complaint": cc.get("chief_complaint", "")[:100] if cc else "",
+            "has_photos": hid in PHOTO_MAP,
+            "photo_count": len(PHOTO_MAP.get(hid, [])),
+        })
+    cases.sort(key=lambda c: c["id"])
+    return jsonify(cases)
+
+@app.route("/api/cases/<case_id>/full")
+def case_full_detail(case_id):
+    """Return all information for a single case."""
+    from database import query_table, get_hpi_text
+    tables = ["patients", "chief_complaints", "oral_examinations", "lab_results",
+              "microbiology_results", "pathology_results", "diagnoses",
+              "tcm_diagnoses", "treatments", "tcm_four_diagnosis"]
+    result = {"case_id": case_id, "has_photos": case_id in PHOTO_MAP}
+    for t in tables:
+        row = query_table(t, case_id)
+        if row:
+            result[t] = dict(row)
+    # Photos
+    if case_id in PHOTO_MAP:
+        photos = []
+        for d in PHOTO_MAP[case_id]:
+            dpath = os.path.join(PHOTO_DIR, d)
+            if os.path.isdir(dpath):
+                for ext in ["*.jpg","*.JPG","*.png","*.PNG","*.jpeg","*.JPEG"]:
+                    for f in sorted(_glob.glob(os.path.join(dpath, "**", ext), recursive=True)):
+                        photos.append("/api/photo/" + os.path.relpath(f, PHOTO_DIR).replace(os.sep, "/"))
+        result["photos"] = photos
+    return jsonify(result)
+
+# ── Comments system ──
+COMMENTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "comments")
+os.makedirs(COMMENTS_DIR, exist_ok=True)
+
+def _load_comments(case_id):
+    fpath = os.path.join(COMMENTS_DIR, f"{case_id}.json")
+    if os.path.exists(fpath):
+        with open(fpath, "r", encoding="utf-8") as f:
+            return __import__("json").load(f)
+    return []
+
+def _save_comments(case_id, comments):
+    fpath = os.path.join(COMMENTS_DIR, f"{case_id}.json")
+    with open(fpath, "w", encoding="utf-8") as f:
+        __import__("json").dump(comments, f, ensure_ascii=False, indent=2)
+
+@app.route("/api/cases/<case_id>/comments", methods=["GET", "POST"])
+def case_comments(case_id):
+    if request.method == "GET":
+        return jsonify(_load_comments(case_id))
+    # POST
+    data = request.json
+    author = (data.get("author") or "匿名用户").strip()[:20] or "匿名用户"
+    content = (data.get("content") or "").strip()[:2000]
+    if not content:
+        return jsonify({"error": "内容不能为空"}), 400
+    comments = _load_comments(case_id)
+    comment = {
+        "id": str(__import__("random").randint(10000, 99999)),
+        "author": author,
+        "content": content,
+        "up": 0, "down": 0,
+        "created_at": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }
+    comments.append(comment)
+    _save_comments(case_id, comments)
+    return jsonify(comment)
+
+@app.route("/api/comments/<comment_id>/vote", methods=["POST"])
+def comment_vote(comment_id):
+    data = request.json
+    case_id = data.get("case_id", "")
+    vote = data.get("vote", "up")  # "up" or "down"
+    if not case_id:
+        return jsonify({"error": "缺少case_id"}), 400
+    comments = _load_comments(case_id)
+    for c in comments:
+        if c.get("id") == comment_id:
+            c[vote] = c.get(vote, 0) + 1
+            _save_comments(case_id, comments)
+            return jsonify(c)
+    return jsonify({"error": "评论不存在"}), 404
 
 @app.route("/api/chat/start", methods=["POST"])
 def start_chat():
     """Initialize a new chat session."""
     data = request.json
-    mode = data.get("mode", "training")  # "training" or "consult"
+    mode = data.get("mode", "training")  # "training", "test", or "consult"
     case_id = data.get("case_id", "")
     session_id = str(random.randint(10000, 99999))
 
-    if mode == "training":
+    if mode in ("training", "test"):
         # Medical student interviews a realistic patient
         if not case_id:
             return jsonify({"error": "请选择训练病例"}), 400
@@ -95,9 +212,12 @@ def start_chat():
         ctx = PatientContext(hadm_id=case_id, patient_info_text=hpi,
                             age=patient.get("age"), gender=patient.get("gender"))
 
-        # Realistic patient for training
+        # Realistic patient for training/test
         pat = RealisticPatientAgent(model="deepseek-chat")
         pat.init_with_patient(ctx)
+
+        # Test mode extras
+        title = data.get("title", "医学生") if mode == "test" else "医学生"
 
         sessions[session_id] = {
             "mode": mode,
@@ -106,6 +226,8 @@ def start_chat():
             "doctor_agent": None,
             "ctx": ctx,
             "history": [],
+            "title": title,
+            "started_at": __import__("datetime").datetime.now().isoformat(),
             "patient_info": {
                 "age": patient.get("age"),
                 "gender": "女" if patient.get("gender") == "F" else "男",
@@ -121,6 +243,7 @@ def start_chat():
         return jsonify({
             "session_id": session_id,
             "mode": mode,
+            "title": title,
             "patient_info": sessions[session_id]["patient_info"],
             "first_message": resp.messages,
         })
@@ -157,7 +280,7 @@ def send_message():
 
     session = sessions[session_id]
 
-    if session["mode"] == "training":
+    if session["mode"] in ("training", "test"):
         # Student sends message -> Realistic patient responds
         pat = session["patient_agent"]
         resp = pat.chat(message)
@@ -236,8 +359,8 @@ def request_examination():
     tool_name = data.get("tool", "")
     params = data.get("params", {})
 
-    if session_id not in sessions or sessions[session_id]["mode"] != "training":
-        return jsonify({"error": "仅训练模式支持检查申请"}), 400
+    if session_id not in sessions or sessions[session_id]["mode"] not in ("training", "test"):
+        return jsonify({"error": "会话已过期，请重新选择病例开始问诊"}), 400
 
     hid = sessions[session_id]["case_id"]
 
@@ -270,15 +393,16 @@ def request_examination():
     result_text = executor()
     sessions[session_id]["history"].append({"role": "system", "content": f"[{labels.get(tool_name, tool_name)}]\n{result_text}"})
 
-    # Include photo URLs for oral exam
+    # Include photo URLs for oral exam (direct lookup, no HTTP call)
     photos = []
-    if tool_name == "oral_exam":
-        import requests as _r
-        try:
-            pr = _r.get(f"http://127.0.0.1:5000/api/photos/{hid}", timeout=1)
-            photos = pr.json().get("photos", [])
-        except:
-            pass
+    if tool_name == "oral_exam" and hid in PHOTO_MAP:
+        for d in PHOTO_MAP[hid]:
+            dpath = os.path.join(PHOTO_DIR, d)
+            if os.path.isdir(dpath):
+                for ext in ["*.jpg", "*.JPG", "*.png", "*.PNG", "*.jpeg", "*.JPEG"]:
+                    for f in sorted(_glob.glob(os.path.join(dpath, "**", ext), recursive=True)):
+                        rel = os.path.relpath(f, PHOTO_DIR)
+                        photos.append(f"/api/photo/{rel.replace(os.sep, '/')}")
 
     return jsonify({"result": result_text, "tool": tool_name,
                     "label": labels.get(tool_name, tool_name), "photos": photos})
@@ -288,8 +412,8 @@ def evaluate():
     """Score student diagnosis against ground truth."""
     data = request.json
     session_id = data.get("session_id", "")
-    if session_id not in sessions or sessions[session_id]["mode"] != "training":
-        return jsonify({"error": "仅训练模式支持评估"}), 400
+    if session_id not in sessions or sessions[session_id]["mode"] not in ("training", "test"):
+        return jsonify({"error": "仅训练/测试模式支持评估"}), 400
 
     session = sessions[session_id]
     hid = session["case_id"]
@@ -312,123 +436,220 @@ def evaluate():
         if true_treatment.get("systemic_treatment"): parts.append(true_treatment["systemic_treatment"])
         true_treatment_text = "; ".join(parts)
 
-    # Scoring
+    # ══════════════════════════════════════════
+    # 新评分逻辑：关键词模糊匹配
+    # ══════════════════════════════════════════
     import re
+
+    def extract_keywords(text):
+        """从文本中提取有意义的2-5字关键词"""
+        s = re.sub(r'[（）()\s,，、\-/a-zA-Z\d]+', '', text)
+        keywords = set()
+        for n in [2, 3, 4, 5]:
+            for i in range(len(s) - n + 1):
+                seg = s[i:i+n]
+                # Filter noisy segments
+                if not re.match(r'^[的了在是和就不也还都只很到得着过被把]', seg):
+                    keywords.add(seg)
+        return keywords
+
     def score_diagnosis(student, truth):
+        """关键词模糊匹配评分。标准答案拆分为关键词，学生答案覆盖足够多即满分。"""
         if not truth: return 0, "无标准答案"
-        def ng(s): return set(re.sub(r'[（）(),，\-\s/a-zA-Z]+','',s.lower())[i:i+2] for i in range(len(s)-1))
-        sg, tg = ng(student), ng(truth)
-        if not tg: return 0, "标准答案为空"
-        cov = len(sg & tg) / len(tg)
-        if cov >= 0.9: return 90 + int(cov * 10), "优秀"
-        if cov >= 0.5: return 60 + int(cov * 30), "良好"
-        if cov >= 0.2: return 30 + int(cov * 50), "部分正确"
-        return max(5, int(cov * 100)), "需改进"
+        if not student: return 0, "未填写"
+        # 手动定义每种疾病的核心关键词（确保关键概念被覆盖）
+        core_keywords = {
+            "扁平苔藓": ["扁平苔藓", "OLP"],
+            "天疱疮": ["天疱疮"],
+            "念珠菌": ["念珠菌", "真菌", "假膜"],
+            "阿弗他": ["阿弗他", "溃疡", "阿弗它"],
+            "疱疹": ["疱疹", "病毒"],
+            "红斑狼疮": ["红斑狼疮", "红斑"],
+            "白斑": ["白斑"],
+            "多形红斑": ["多形红斑", "多形"],
+            "坏死性溃疡性龈炎": ["坏死", "龈炎", "ANUG"],
+            "苔藓样": ["苔藓样", "苔藓"],
+            "类天疱疮": ["类天疱疮", "天疱"],
+            "放射性": ["放射性", "放疗", "放射"],
+            "带状疱疹": ["带状疱疹", "带状"],
+            "过敏性": ["过敏", "过敏性"],
+            "白色海绵状": ["海绵状", "海绵"],
+            "慢性唇炎": ["唇炎", "慢性"],
+            "种植体": ["种植体", "种植"],
+            "梅罗": ["梅罗", "MRS"],
+        }
+        s = student.lower()
+        t = truth.lower()
+
+        # 找出该标准答案可能对应的疾病
+        best_match_count = 0
+        best_keywords = set()
+        for disease, kws in core_keywords.items():
+            if any(kw.lower() in t for kw in kws):
+                matched = sum(1 for kw in kws if kw.lower() in s)
+                if matched > best_match_count:
+                    best_match_count = matched
+                    best_keywords = kws
+
+        # 如果没有匹配到预定义疾病，使用通用关键词匹配
+        if not best_keywords:
+            t_clean = re.sub(r'[（）()，,\s\-/a-zA-Z\d]+', '', truth)
+            best_keywords = set()
+            for i in range(len(t_clean) - 1):
+                seg = t_clean[i:i+2]
+                if seg not in ("口腔", "黏膜", "型", "性", "病"):
+                    best_keywords.add(seg)
+
+        # 评分
+        if not best_keywords: return 50, "良好"
+        matched = sum(1 for kw in best_keywords if kw.lower() in s)
+        ratio = matched / len(best_keywords)
+
+        if ratio >= 0.8: return 95 + int(ratio * 5), "优秀"
+        if ratio >= 0.5: return 70 + int(ratio * 30), "良好"
+        if ratio >= 0.2: return 30 + int(ratio * 50), "部分正确"
+        return max(10, int(ratio * 100)), "需改进"
 
     def score_treatment(student, truth):
-        """Match treatment directions, not specific drug names."""
+        """治疗方向匹配——只判断大方向，不要求具体药名。"""
         if not truth: return 0, "无标准答案"
-        categories = {
-            "局部激素": [r'激素.{0,4}(漱口|含漱|软膏|外用|涂抹|涂布)', r'(曲安奈德|地塞米松|曲安缩松).{0,4}(软膏|漱口|外用)', r'triamcinolone', r'dexamethasone'],
-            "局部止痛": [r'利多卡因', r'lidocaine', r'止痛', r'苯佐卡因', r'benzocaine'],
-            "局部抗感染": [r'氯己定', r'chlorhexidine', r'西吡氯铵', r'抗菌.{0,3}(漱口|含漱)', r'碘伏'],
-            "全身激素": [r'(口服|全身).{0,4}激素', r'泼尼松', r'prednisolone', r'甲泼尼龙', r'methylprednisolone'],
-            "免疫抑制剂": [r'羟氯喹', r'hydroxychloroquine', r'沙利度胺', r'thalidomide', r'秋水仙碱', r'colchicine', r'氨苯砜', r'dapsone', r'霉酚酸酯', r'mycophenolate', r'环孢素', r'cyclosporine', r'甲氨蝶呤', r'methotrexate', r'雷公藤'],
-            "抗真菌": [r'制霉素', r'nystatin', r'氟康唑', r'fluconazole', r'咪康唑', r'miconazole', r'抗真菌'],
-            "抗病毒": [r'阿昔洛韦', r'acyclovir', r'伐昔洛韦', r'valacyclovir', r'抗病毒'],
-            "抗细菌": [r'甲硝唑', r'metronidazole', r'多西环素', r'doxycycline', r'抗生素', r'阿莫西林'],
-            "抗组胺": [r'氯雷他定', r'loratadine', r'抗组胺', r'抗过敏'],
-            "支持治疗": [r'维生素', r'vitamin', r'补钙', r'护胃', r'奥美拉唑', r'omeprazole'],
-            "中医外治": [r'康复新液', r'养阴生肌', r'冰硼散', r'青黛散', r'含漱', r'湿敷', r'中药.{0,3}(漱口|含漱|外敷)'],
-            "生活指导": [r'戒烟', r'戒酒', r'防晒', r'sunscreen', r'饮食', r'口腔卫生', r'规律作息'],
-            "物理治疗": [r'激光', r'laser', r'光动力', r'PDT', r'冷冻'],
+        if not student: return 0, "未填写"
+
+        directions = {
+            "局部治疗": [r'局部', r'外用', r'涂', r'抹', r'含漱', r'漱口', r'软膏', r'凝胶', r'膜', r'贴'],
+            "全身治疗": [r'全身', r'口服', r'内服', r'系统', r'全身用药'],
+            "抗炎": [r'抗炎', r'消炎', r'激素', r'皮质', r'曲安奈德', r'地塞米松', r'泼尼松', r'甲泼尼龙', r'氯倍他索', r'他克莫司'],
+            "免疫调节": [r'免疫', r'羟氯喹', r'沙利度胺', r'秋水仙碱', r'雷公藤', r'环孢素', r'甲氨蝶呤', r'氨苯砜', r'霉酚酸酯', r'调节免疫'],
+            "抗感染": [r'抗感染', r'抗菌', r'抗真菌', r'抗病毒', r'制霉素', r'氟康唑', r'阿昔洛韦', r'甲硝唑', r'多西环素', r'氯己定'],
+            "止痛对症": [r'止痛', r'镇痛', r'对症', r'利多卡因', r'苄达明'],
+            "口腔卫生": [r'卫生', r'洁牙', r'戒烟', r'戒酒', r'饮食', r'防晒', r'口腔护理'],
+            "随访复查": [r'随访', r'复查', r'定期', r'监测', r'复诊', r'观察'],
         }
-        found = 0; total = len(categories)
+
         s_lower = student.lower()
-        for cat, patterns in categories.items():
+        found = 0
+        details = []
+        for label, patterns in directions.items():
             if any(re.search(p, s_lower) for p in patterns):
                 found += 1
-        rate = found / total
-        if rate >= 0.5: return 85 + int(rate * 15), "优秀"
-        if rate >= 0.3: return 55 + int(rate * 30), "良好"
-        if rate >= 0.1: return 20 + int(rate * 50), "部分正确"
-        return max(5, int(rate * 100)), "需改进"
+                details.append(label)
 
-    def translate_treatment(text):
-        """Translate treatment JSON to readable Chinese."""
+        # 方向数评分（答对5个方向即可满分）
+        target = min(8, len(directions))
+        ratio = found / target
+        if ratio >= 0.75: score = 90 + int(ratio * 10)
+        elif ratio >= 0.4: score = 55 + int(ratio * 40)
+        elif ratio >= 0.15: score = 20 + int(ratio * 60)
+        else: score = max(5, int(ratio * 100))
+
+        level = "优秀" if score >= 85 else ("良好" if score >= 60 else ("部分正确" if score >= 25 else "需改进"))
+        return score, level
+
+    def score_tcm(student, truth):
+        """中医辨证加分项（0-10分）。关键词匹配即可。"""
+        if not truth or not student: return 0
+        # 从标准答案中提取中医关键词元素
+        elements = re.findall(r'[脏腑气血阴阳虚实寒热燥湿痰瘀风火毒]|阴虚|阳虚|气虚|血虚|气滞|血瘀|湿热|寒湿|痰湿|火热|风热', truth)
+        if not elements:
+            elements = list(set(re.findall(r'.{2}', re.sub(r'[证型方药]', '', truth))))
+
+        s = student.lower()
+        matched = sum(1 for e in elements if e in s)
+        total = max(1, len(set(elements)))
+        bonus = min(10, int(matched / total * 15))
+        return bonus
+
+    def format_treatment_display(text):
+        """格式化治疗标准答案显示。现在DB已是中文，只需清理残留英文。"""
         if not text: return "无"
-        # Try to parse JSON-like structure and extract Chinese meaning
-        import json as _json
-        parts = []
-        # Match patterns like {"drug":"frequency route"}
-        for segment in text.split(";"):
-            segment = segment.strip()
-            if not segment: continue
-            # Extract drug name and route from patterns like: "triamcinolone 0.1% ointment bid topical"
-            # Map common English terms to Chinese
-            mapping = {
-                "triamcinolone": "曲安奈德", "prednisolone": "泼尼松", "dexamethasone": "地塞米松",
-                "chlorhexidine": "氯己定", "lidocaine": "利多卡因", "nystatin": "制霉素",
-                "fluconazole": "氟康唑", "miconazole": "咪康唑", "acyclovir": "阿昔洛韦",
-                "valacyclovir": "伐昔洛韦", "hydroxychloroquine": "羟氯喹", "colchicine": "秋水仙碱",
-                "metronidazole": "甲硝唑", "doxycycline": "多西环素", "mycophenolate": "霉酚酸酯",
-                "thalidomide": "沙利度胺", "loratadine": "氯雷他定", "omeprazole": "奥美拉唑",
-                "ointment": "软膏", "mouthwash": "含漱液", "gel": "凝胶",
-                "topical": "外用", "oral": "口服", "bid": "每日2次", "tid": "每日3次",
-                "qd": "每日1次", "qid": "每日4次", "prn": "必要时",
-            }
-            translated = segment
-            for en, zh in mapping.items():
-                translated = re.sub(en, zh, translated, flags=re.IGNORECASE)
-            translated = re.sub(r'[{}"\'\[\]]', '', translated)
-            translated = re.sub(r'\d+%', '', translated)
-            parts.append(translated.strip().strip(","))
-        return "；".join(parts[:5]) if parts else text[:200]
+        # 清理残留英文给药方式
+        cmds = {
+            r'\btid topical\b': '每日3次外用', r'\bbid topical\b': '每日2次外用',
+            r'\bqid topical\b': '每日4次外用', r'\bqd topical\b': '每日1次外用',
+            r'\btid\b': '每日3次', r'\bbid\b': '每日2次', r'\bqd\b': '每日1次',
+            r'\bqid\b': '每日4次', r'\bprn\b': '必要时',
+            r'\bpo\b': '口服', r'\btopical\b': '外用',
+            r'\bswish_and_swallow\b': '含漱后吞咽',
+            r'\bapply to.*?(;|$)': '',
+            r'_{1,}': '',
+            r'\bfor\s+\d+\w?\b': '', r'\bday\b': '', r'\bweek\b': '周',
+            r'\bif\b.*?(;|$)': '',
+            r'\bq\d+h\b': '', r'\bmg\b': 'mg', r'\bkg\b': 'kg',
+            r'\b(eye_exam|baseline|short_course|resistant|refractory|recurrence|frequent)\b': '',
+            r',\s*,': '，',
+        }
+        result = text
+        for pat, repl in cmds.items():
+            result = re.sub(pat, repl, result, flags=re.IGNORECASE)
+        # 清理换行和多余符号
+        result = re.sub(r'[{}"\'\[\]]', '', result)
+        result = re.sub(r'[,;，；]+', '；', result)
+        result = re.sub(r'^\s*[;；]\s*', '', result)
+        return result.strip()[:300] or text[:300]
 
+    # ── 执行评分 ──
     diag_score, diag_level = score_diagnosis(student_diag, true_diag_text)
-    treat_score, treat_level = score_treatment(student_treatment, true_treatment_text) if true_treatment_text else (0, "无标准答案")
+    treat_score, treat_level = score_treatment(student_treatment, true_treatment_text)
 
-    # TCM: only score if true TCM data exists
+    # TCM 加分（0-10分额外加）
     has_tcm = bool(true_tcm_text)
-    tcm_score, tcm_level = (0, "无中医数据")
-    if has_tcm:
-        tcm_score, tcm_level = score_diagnosis(student_tcm, true_tcm_text)
+    tcm_bonus = score_tcm(student_tcm, true_tcm_text) if has_tcm else 0
 
-    # Interaction efficiency bonus
+    # 问诊轮次
     student_msgs = [h for h in session["history"] if h["role"] == "student"]
     rounds = len(student_msgs)
-    if rounds <= 3: efficiency_bonus = 10
-    elif rounds <= 6: efficiency_bonus = 6
-    elif rounds <= 10: efficiency_bonus = 3
-    else: efficiency_bonus = 0
 
-    # Weighted total — TCM only counts when ground truth has TCM data
-    if has_tcm:
-        weights = {"diag": 0.45, "tcm": 0.25, "treatment": 0.20, "efficiency": 0.10}
-    else:
-        weights = {"diag": 0.60, "tcm": 0.0, "treatment": 0.28, "efficiency": 0.12}
-
-    total = diag_score * weights["diag"]
-    total += tcm_score * weights["tcm"]
-    total += treat_score * weights["treatment"]
-    total += efficiency_bonus * weights["efficiency"] * 10
+    # 总分 = 西医诊断70% + 治疗方案30% + 中医加分(0-10)
+    total = diag_score * 0.70 + treat_score * 0.30 + tcm_bonus
+    total = min(100, round(total, 1))
 
     grade = "A" if total >= 85 else ("B" if total >= 70 else ("C" if total >= 55 else "D"))
 
+    # Test mode: save results + title-based behavior
+    is_test = session.get("mode") == "test"
+    title = session.get("title", "医学生")
+    hide_tutor = title in ("主治医师", "副主任医师", "主任医师")
+    show_ref_only = title in ("副主任医师", "主任医师")  # Only show reference, no scores
+
+    if is_test:
+        test_record = {
+            "session_id": session_id,
+            "case_id": hid,
+            "title": title,
+            "started_at": session.get("started_at", ""),
+            "rounds": rounds,
+            "diagnosis": student_diag,
+            "tcm": student_tcm,
+            "treatment": student_treatment,
+            "scores": {"diag": diag_score, "treatment": treat_score, "tcm_bonus": tcm_bonus, "total": total, "grade": grade},
+            "history": session["history"],
+            "timestamp": __import__("datetime").datetime.now().isoformat(),
+        }
+        os.makedirs("outputs/tests", exist_ok=True)
+        test_file = f"outputs/tests/{session_id}_{hid}_{title}_{__import__('datetime').datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(test_file, "w", encoding="utf-8") as f:
+            __import__("json").dump(test_record, f, ensure_ascii=False, indent=2)
+
     return jsonify({
         "scores": {
-            "western_diagnosis": {"score": diag_score, "level": diag_level},
-            "tcm_syndrome": {"score": tcm_score, "level": tcm_level} if has_tcm else None,
-            "treatment_plan": {"score": treat_score, "level": treat_level},
-            "efficiency_bonus": efficiency_bonus,
-            "total": round(total, 1),
+            "western_diagnosis": {"score": diag_score, "level": diag_level, "weight": "70%"},
+            "treatment_plan": {"score": treat_score, "level": treat_level, "weight": "30%"},
+            "tcm_bonus": {"score": tcm_bonus, "max": 10} if has_tcm else None,
+            "total": total,
             "grade": grade,
         },
         "truth": {
             "diagnosis": true_diag_text,
+            "icd11": query_table("diagnoses", hid).get("icd11_code", "") if query_table("diagnoses", hid) else "",
             "tcm": true_tcm_text,
-            "treatment": translate_treatment(true_treatment_text),
+            "treatment": format_treatment_display(true_treatment_text),
         },
+        "test_mode": {
+            "is_test": is_test,
+            "title": title,
+            "hide_tutor": hide_tutor,
+            "show_ref_only": show_ref_only,
+        } if is_test else None,
         "stats": {
             "rounds": rounds,
             "patient_msgs": len([h for h in session["history"] if h["role"] == "patient"]),

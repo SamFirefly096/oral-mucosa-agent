@@ -110,9 +110,60 @@ python evaluate.py                                  # 评估
 - .env文件配置 `DEEPSEEK_API_KEY`
 - 依赖：openai, pydantic, python-dotenv, tenacity, flask, flask-cors
 
+## GitHub 仓库
+
+- 地址：https://github.com/SamFirefly096/oral-mucosa-agent
+- Remote：`git@github.com:SamFirefly096/oral-mucosa-agent.git`（SSH）
+- 更新流程：
+```bash
+cd "E:\OneDrive\智能体文章写作空间\oral-mucosa-agent-full"
+git add -A
+git commit -m "描述改动内容"
+git push origin master
+```
+- `.gitignore` 排除了 `.env`、`outputs/`、`README_完整.md` 等敏感/本地文件
+- 推送前检查 `git status`，确认不包含密钥或本地路径
+
+## 云服务器部署
+
+> 详细信息见 `README_完整.md`（本地文件，不入git）
+
+| 项目 | 值 |
+|------|-----|
+| SSH密钥 | `~/.ssh/id_ed25519` |
+| 服务器路径 | `/opt/oral-mucosa-agent` |
+| 服务名 | `oral-mucosa` (systemd) |
+| Gunicorn | 2 workers, 127.0.0.1:5000 |
+| Nginx | 反代 :80 → :5000 |
+
+**更新服务器代码**（使用 paramiko + SFTP）：
+```python
+import paramiko
+client = paramiko.SSHClient()
+client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+client.connect("服务器IP", username="root", key_filename=os.path.expanduser("~/.ssh/id_ed25519"))
+sftp = client.open_sftp()
+sftp.put("本地文件路径", "/opt/oral-mucosa-agent/远程路径")
+sftp.close()
+# 重启服务
+stdin, stdout, stderr = client.exec_command("systemctl restart oral-mucosa && sleep 2 && systemctl is-active oral-mucosa")
+client.close()
+```
+- 部署模板脚本见 `E:\工作目录\tmp\deploy_updates.py`（可复制修改）
+- 如更新数据库文件，需同步上传 `data/oral_mucosa.db`
+
+## 评分逻辑
+
+- **西医诊断 (70%)**：关键词模糊匹配，答中核心疾病词即高分
+- **治疗方案 (30%)**：8大方向匹配（局部/全身/抗炎/免疫/抗感染/止痛/卫生/随访），不要求具体药名
+- **中医辨证**：额外加分 +0~10，关键词匹配（如脾、湿、热）
+- 标准答案使用 ICD-11 中文名称，数据库已全部中文化
+- 评分函数在 `app.py` 的 `evaluate()` 路由中
+
 ## 注意事项
 
 - Bash环境输出经常为空，需 `script.py > output.txt 2>&1` 后Read读取
 - 训练模式密码：`20260705`
 - 项目论文不引用王雨田相关内容
 - 伦理审批为投稿前置条件（尚未获批）
+- 本地完整说明在 `README_完整.md`（含服务器IP等敏感信息，不入git）

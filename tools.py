@@ -284,6 +284,28 @@ class TCMFormulaRequest(BaseModel):
     )
 
 
+class SearchClinicalKnowledge(BaseModel):
+    """查询2025口腔黏膜病学术年会诊疗知识库，获取最新的诊疗经验、专家意见、鉴别诊断要点和罕见病识别特征。
+    在以下情况应主动调用此工具：(1)遇到罕见或少见病临床表现需确认诊断线索；
+    (2)治疗方案不确定需查阅最新临床经验；(3)需要了解特定疾病的最新治疗技术或药物进展。
+    此工具按关键词检索286条知识条目，返回最相关的内容摘要。"""
+    tool_name: str = Field(default="search_clinical_knowledge", description="工具名称")
+
+    query: str = Field(
+        description="搜索关键词（疾病名称、症状、治疗方法、药物名称等，中文优先）",
+        examples=["天疱疮 利妥昔单抗", "腭部溃疡 鉴别诊断", "OLP维A酸方案"],
+    )
+    knowledge_type: Optional[str] = Field(
+        default=None,
+        description="可选过滤：专家意见/诊疗经验/鉴别诊断/技术创新/临床警示/罕见病识别要点/病例发现/罕见病知识/治疗方案/诊断路径",
+        examples=["专家意见", "诊疗经验", "鉴别诊断"],
+    )
+    top_k: int = Field(
+        default=5, ge=1, le=10,
+        description="返回最相关的结果数量（1-10，默认5）",
+    )
+
+
 class DiagnosisAndPlan(BaseModel):
     """完成诊断并制定治疗计划——此工具调用后对话结束"""
     tool_name: str = Field(default="finalize_diagnosis", description="工具名称")
@@ -324,6 +346,7 @@ class DiagnosisAndPlan(BaseModel):
 
 # ── 所有工具列表（不含 PatientHistory — 对话开始时自动提供） ──
 ALL_TOOLS = [
+    SearchClinicalKnowledge,
     OralExamination,
     TCMFourDiagnosis,
     LabRequest,

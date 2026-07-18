@@ -32,3 +32,9 @@ README_完整.md
 # 临时文件
 *.log
 tmp/
+
+data/*.backup
+data/*.bak*
+# Database backups
+data/*.db.backup
+data/*.db.bak*
