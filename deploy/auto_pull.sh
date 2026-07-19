@@ -11,7 +11,7 @@ REMOTE=$(git rev-parse origin/master)
 
 if [ "$LOCAL" != "$REMOTE" ]; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] New commit detected, deploying..."
-    git pull origin master
+    git reset --hard origin/master
     sudo systemctl restart oral-mucosa
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Deploy complete, service restarted."
 else
