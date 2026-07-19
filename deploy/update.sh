@@ -79,13 +79,13 @@ echo " 口腔黏膜病AI诊断Agent — 更新"
 echo " $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================"
 
-# ── 1. 备份当前版本 ──
+# ── 1. 备份当前版本（排除.git/cases_photos/__pycache__，防止膨胀） ──
 BACKUP_PATH="$BACKUP_DIR/$(date '+%Y%m%d_%H%M%S')"
 info "备份到 $BACKUP_PATH"
 sudo mkdir -p "$BACKUP_PATH"
-sudo cp -r "$APP_DIR"/* "$BACKUP_PATH/" 2>/dev/null || true
-# 只保留最近 5 个备份
-sudo ls -dt "$BACKUP_DIR"/*/ 2>/dev/null | tail -n +6 | sudo xargs rm -rf 2>/dev/null || true
+sudo rsync -av --exclude='.git' --exclude='cases_photos' --exclude='__pycache__' "$APP_DIR/" "$BACKUP_PATH/" 2>/dev/null || true
+# 只保留最近 3 个备份
+sudo ls -dt "$BACKUP_DIR"/*/ 2>/dev/null | tail -n +4 | sudo xargs rm -rf 2>/dev/null || true
 
 # ── 2. 拉取最新代码 ──
 cd "$APP_DIR"

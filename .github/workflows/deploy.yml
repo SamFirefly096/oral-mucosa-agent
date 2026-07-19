@@ -33,12 +33,12 @@ jobs:
           script: |
             cd /opt/oral-mucosa-agent
 
-            # 备份当前版本
+            # 备份当前版本（排除.git/cases_photos/__pycache__，防止膨胀）
             mkdir -p /opt/oral-mucosa-backups
             BACKUP_DIR="/opt/oral-mucosa-backups/$(date +%Y%m%d_%H%M%S)"
-            cp -r . "$BACKUP_DIR" 2>/dev/null || true
-            # 只保留最近 5 个备份
-            ls -dt /opt/oral-mucosa-backups/*/ 2>/dev/null | tail -n +6 | xargs rm -rf 2>/dev/null || true
+            rsync -av --exclude='.git' --exclude='cases_photos' --exclude='__pycache__' . "$BACKUP_DIR/" 2>/dev/null || true
+            # 只保留最近 3 个备份
+            ls -dt /opt/oral-mucosa-backups/*/ 2>/dev/null | tail -n +4 | xargs rm -rf 2>/dev/null || true
 
             # 拉取最新代码
             git fetch origin
