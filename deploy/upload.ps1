@@ -1,5 +1,11 @@
 # ============================================================
-#  一键上传部署脚本 (Windows PowerShell)
+#  ⛔ 已废弃 — 请勿使用！
+#  v0.1.0起改用纯Git工作流：commit → push → 服务器自动pull
+#  服务器每2分钟自动检测GitHub更新并部署（cron + auto_pull.sh）
+#
+#  如需紧急部署：ssh root@123.56.96.19 "/opt/oral-mucosa-agent/deploy/auto_pull.sh"
+# ============================================================
+#  一键上传部署脚本 (Windows PowerShell) — 【已废弃，仅保留供参考】
 #  用法: .\deploy\upload.ps1 -Server user@1.2.3.4
 #
 #  前提条件:

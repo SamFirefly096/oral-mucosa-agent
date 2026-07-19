@@ -124,33 +124,33 @@ git push origin master
 - `.gitignore` 排除了 `.env`、`outputs/`、`README_完整.md` 等敏感/本地文件
 - 推送前检查 `git status`，确认不包含密钥或本地路径
 
-## 云服务器部署
+## 版本与部署
 
-> 详细信息见 `README_完整.md`（本地文件，不入git）
+**版本号**：`VERSION` 文件 + Git tag（当前 v0.1.0），每次发布递增。
 
-| 项目 | 值 |
-|------|-----|
-| SSH密钥 | `~/.ssh/id_ed25519` |
-| 服务器路径 | `/opt/oral-mucosa-agent` |
-| 服务名 | `oral-mucosa` (systemd) |
-| Gunicorn | 2 workers, 127.0.0.1:5000 |
-| Nginx | 反代 :80 → :5000 |
-
-**更新服务器代码**（使用 paramiko + SFTP）：
-```python
-import paramiko
-client = paramiko.SSHClient()
-client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-client.connect("服务器IP", username="root", key_filename=os.path.expanduser("~/.ssh/id_ed25519"))
-sftp = client.open_sftp()
-sftp.put("本地文件路径", "/opt/oral-mucosa-agent/远程路径")
-sftp.close()
-# 重启服务
-stdin, stdout, stderr = client.exec_command("systemctl restart oral-mucosa && sleep 2 && systemctl is-active oral-mucosa")
-client.close()
+**部署工作流（唯一通道）**：
 ```
-- 部署模板脚本见 `E:\工作目录\tmp\deploy_updates.py`（可复制修改）
-- 如更新数据库文件，需同步上传 `data/oral_mucosa.db`
+本地改代码 → git commit → git push origin master → 等待2分钟 → 服务器自动部署
+```
+
+服务器通过 cron 每2分钟执行 `deploy/auto_pull.sh`：
+1. `git fetch origin master` 检查新提交
+2. 检测到新提交 → `git pull` → `systemctl restart oral-mucosa`
+3. 日志：`/var/log/oral-mucosa/auto_pull.log`
+
+**紧急手动部署**：
+```bash
+ssh root@123.56.96.19 "/opt/oral-mucosa-agent/deploy/auto_pull.sh"
+```
+
+**⛔ upload.ps1 已废弃** — scp直传绕过版本管理，曾导致服务器代码回退事故。禁止使用。
+
+**版本发布清单**：
+1. `echo "0.1.1" > VERSION`（递增版本号）
+2. `git add -A && git commit -m "v0.1.1: 改动简述"`
+3. `git tag -a v0.1.1 -m "v0.1.1: 改动简述"`
+4. `git push origin master --tags`
+5. 等待2分钟自动部署，或SSH手动触发
 
 ## 评分逻辑
 
