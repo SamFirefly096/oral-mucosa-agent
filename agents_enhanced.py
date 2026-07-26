@@ -52,6 +52,7 @@ LEARNING_SYSTEM_PROMPT = """你是一位在口腔黏膜病专科门诊工作了1
 2. **鉴别诊断经验**：糜烂性病变先排除天疱疮（Nikolsky征）；白色病变先排除念珠菌（擦除试验）；水疱病变先鉴别表皮内vs表皮下（Nikolsky+病理）。
 3. **中医辨证经验**：舌暗+脉涩→血瘀；舌红苔黄腻+脉滑数→湿热；舌红少苔+脉细数→阴虚；舌淡胖有齿痕+脉濡→脾虚湿困。
 4. **安全第一**：处方前确认过敏史；老年/肾功能不全者调整剂量；激素使用需评估感染风险。
+5. **循证诊断**：最终诊断必须列出诊断依据和参考文献（至少1条）。参考文献格式：作者/学会.标题.期刊/出版社,年份。
 
 参考教科书：徐治鸿《中西医结合口腔黏膜病学》；中华口腔医学会各指南；《中华人民共和国药典》（2020版）。
 
@@ -107,6 +108,11 @@ TEXTBOOK_SYSTEM_PROMPT = """你是一位刚完成住院医师规范化培训的�
 - 西医：局部+全身，阶梯治疗，注意药物相互作用和禁忌证
 - 中医：辨证论治，随证加减，注意中药十八反十九畏
 - 中西医结合优势互补：急则治标（西医抗炎免疫抑制）+缓则治本（中医整体调理）
+
+## 循证诊断要求
+最终诊断时，必须提供诊断依据所引用的参考文献（至少1条）。格式：作者/学会.标题.期刊/出版社,年份。
+例如：徐治鸿.中西医结合口腔黏膜病学.人民卫生出版社,2008
+或：中华口腔医学会口腔黏膜病专业委员会.口腔扁平苔藓诊疗指南(修订版).中华口腔医学杂志,2023
 
 ## 你的局限（请明确遵守）
 1. 你仅知道教科书描述，不知道任何具体病例的表现形式
@@ -213,6 +219,7 @@ class BaseMedAgent:
         self.message_history = [{"role": "system", "content": system_prompt}]
         self.tool_schemas = self._build_tool_schemas()
         self.completed = False
+        self.diagnosis_submitted = False
         self.tool_call_count = 0
         self.total_time = 0.0
 
@@ -295,8 +302,8 @@ class BaseMedAgent:
         result = executor(hadm_id, **tool_call["arguments"]) if executor else f"Unknown: {func_name}"
         self.message_history.append({"role": "tool", "tool_call_id": tool_call["id"], "content": str(result)})
         if func_name == "finalize_diagnosis":
-            self.completed = True
-            return Response(assistant="MedAgent", type="terminated", messages=str(result))
+            self.diagnosis_submitted = True
+            return Response(assistant="MedAgent", type="diagnosis_submitted", messages=str(result))
         return Response(assistant="MedAgent", type="tool_result", messages=str(result))
 
     def force_finish(self, hadm_id: str) -> Response:
@@ -363,7 +370,7 @@ CHIEF_SYSTEM_PROMPT = """你是一位在口腔黏膜病专科门诊工作了20�
 2. **双重验证**：每次形成诊断假设后，用教科书原则验证其合理性；每次应用临床经验时，确认符合指南规范
 3. **选择性检查**：根据临床经验判断哪些辅助检查是必需的，避免过度检查，但对诊断不确定的病例应积极检查
 4. **中医辨证推理链**：舌象→病性→脉象确认→病位→证型→对照标准证型表验证，不可跳过步骤
-5. **知识库辅助**：遇到罕见病、不典型表现、治疗方案不确定或需查阅最新进展时，调用 search_clinical_knowledge 查询2025口腔黏膜病年会286条诊疗知识（专家意见/诊疗经验/鉴别诊断/技术创新/罕见病识别）
+5. **循证诊断**：最终诊断必须列出诊断依据和参考文献（至少1条）。每条证据需说明"该表现支持本诊断的理由"。参考文献格式：作者/学会.标题.期刊/出版社,年份。遇到罕见病、不典型表现、治疗方案不确定或需查阅最新进展时，调用 search_clinical_knowledge 查询2025口腔黏膜病年会286条诊疗知识（专家意见/诊疗经验/鉴别诊断/技术创新/罕见病识别）
 
 ## 诊疗原则
 - 经验与理论并重：先以教科书框架系统评估，再用临床经验快速锁定诊断方向

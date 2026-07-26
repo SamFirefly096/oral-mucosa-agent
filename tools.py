@@ -318,8 +318,13 @@ class DiagnosisAndPlan(BaseModel):
     differential_diagnoses: list[str] = Field(
         description="鉴别诊断列表（至少2-3个）",
     )
-    diagnosis_basis_clinical: str = Field(description="诊断的临床依据")
+    diagnosis_basis_clinical: str = Field(description="诊断的临床依据（列出支持诊断的关键临床表现）")
     diagnosis_basis_lab: Optional[str] = Field(default=None, description="诊断的化验/微生物/病理依据")
+    evidence_references: Optional[list[str]] = Field(
+        default=None,
+        description="诊断依据引用的参考文献或指南（至少1条，格式：作者.标题.期刊/出版社,年份）",
+        examples=[["徐治鸿.中西医结合口腔黏膜病学.人民卫生出版社,2008", "中华口腔医学会.口腔扁平苔藓诊疗指南.2023"]],
+    )
 
     # 中医诊断
     tcm_disease_name: Optional[str] = Field(

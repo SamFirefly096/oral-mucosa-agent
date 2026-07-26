@@ -33,6 +33,7 @@ def run_conversation(
 
     返回: 包含完整对话记录的 dict
     """
+    reflection_done = False
     conversation_log = []
     t_start = time.time()
 
@@ -55,7 +56,7 @@ def run_conversation(
     def _handle_med_response(resp):
         """处理 MedAgent 响应中的工具调用（批量执行 + 递归处理后续调用）。
         返回最终的、不含工具末处理的 response，以及使用的 turn 增量。"""
-        nonlocal turn
+        nonlocal turn, reflection_done
         extra_turns = 0
 
         if resp.type != "function_call" or not resp.tool_calls:
@@ -83,8 +84,35 @@ def run_conversation(
                 if verbose:
                     _print_response("Tool", tool_response)
 
-                if med_agent.completed:
-                    return tool_response, extra_turns
+                if tool_response.type == "diagnosis_submitted":
+                    if not reflection_done:
+                        reflection_done = True
+                        # 注入反思提示
+                        reflection_prompt = (
+                            "【自反思核查】在最终确定诊断前，请进行以下核查：\n"
+                            "1. 我是否遗漏了任何关键信息（用药史、家族史、系统性疾病史）？\n"
+                            "2. 鉴别诊断是否充分排除了临床表现相似的其他疾病？\n"
+                            "3. 诊断能否解释患者的所有临床表现？\n"
+                            "4. 诊断依据是否引用了文献支持？\n\n"
+                            "如有遗漏或需要修正，请重新调用 finalize_diagnosis。如已完备，回复'诊断确认无误'。"
+                        )
+                        med_agent.message_history.append({"role": "user", "content": reflection_prompt})
+                        resp = med_agent.chat(user_input=None)
+                        turn += 1
+                        extra_turns += 1
+                        conversation_log.append({
+                            "turn": turn,
+                            "role": "MedAgent(reflection)",
+                            "content": resp.messages,
+                            "type": resp.type,
+                        })
+                        if verbose:
+                            print(f"\n  [REFLECTION] {resp.messages[:200] if resp.messages else ''}...")
+                        # 处理反思后的工具调用
+                        resp, _ = _handle_med_response(resp)
+                    med_agent.completed = True
+                    return Response(assistant="MedAgent", type="terminated",
+                                    messages="诊断完成（含自反思核查）"), extra_turns
 
             # 第二阶段：获取 LLM 后续响应
             resp = med_agent.chat(user_input=None)
