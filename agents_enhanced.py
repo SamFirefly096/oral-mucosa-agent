@@ -206,11 +206,100 @@ class PatientContext:
     gender: Optional[str] = None
 
 
+def _repair_bare_strings(s: str) -> str:
+    """修复未加引号的字符串值（DeepSeek小模型常见：'key": 中文裸值'），返回修复后的JSON字符串"""
+    out = []
+    i = 0
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c == '"':
+            # 复制整个字符串字面量（含转义）
+            out.append(c)
+            i += 1
+            while i < n:
+                ch = s[i]
+                out.append(ch)
+                if ch == '\\' and i + 1 < n:
+                    out.append(s[i + 1])
+                    i += 2
+                    continue
+                if ch == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == ':':
+            out.append(c)
+            i += 1
+            while i < n and s[i] in ' \t\n\r':
+                out.append(s[i])
+                i += 1
+            if i < n and s[i] not in '"{[':
+                start = i
+                while i < n and s[i] not in ',}':
+                    i += 1
+                raw = s[start:i].strip()
+                if raw.lower() in ('true', 'false', 'null'):
+                    out.append(raw)
+                else:
+                    try:
+                        float(raw)
+                        out.append(raw)
+                    except ValueError:
+                        escaped = raw.replace('\\', '\\\\').replace('"', '\\"')
+                        out.append('"')
+                        out.append(escaped)
+                        out.append('"')
+                continue
+            continue
+        out.append(c)
+        i += 1
+    return ''.join(out)
+
+
+def _safe_json_loads(text: str) -> dict:
+    """容错解析工具参数JSON：直接解析→修复裸值→提取首个平衡{}块→返回空字典"""
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    # 修复未加引号的字符串值后重试（DeepSeek小模型常见问题）
+    try:
+        repaired = _repair_bare_strings(text)
+        if repaired != text:
+            return json.loads(repaired)
+    except Exception:
+        pass
+    # 尝试提取首个平衡的大括号块
+    try:
+        start = text.find('{')
+        if start == -1:
+            return {}
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == '{':
+                depth += 1
+            elif text[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    block = text[start:i + 1]
+                    try:
+                        return json.loads(block)
+                    except Exception:
+                        return json.loads(_repair_bare_strings(block))
+        return {}
+    except Exception:
+        return {}
+
+
 class BaseMedAgent:
     """共享的MedAgent基类"""
     def __init__(self, system_prompt: str, model: str = "deepseek-chat",
                  temperature: float = 0.01, thinking: bool = False):
-        self.client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
+        self.client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL, timeout=120.0)
         self.model = model
         self.temperature = temperature
         self.thinking = thinking
@@ -262,13 +351,11 @@ class BaseMedAgent:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def _call_api(self) -> dict:
-        extra_body = {}
-        if self.thinking:
-            extra_body["thinking"] = {"type": "enabled"}
+        extra_body = {"thinking": {"type": "enabled" if self.thinking else "disabled"}}
         response = self.client.chat.completions.create(
             model=self.model, messages=self.message_history,
             tools=self.tool_schemas, tool_choice="auto",
-            temperature=self.temperature, extra_body=extra_body,
+            temperature=self.temperature, max_tokens=4096, extra_body=extra_body,
         )
         return response.choices[0].message
 
@@ -276,32 +363,63 @@ class BaseMedAgent:
         t0 = time.time()
         if user_input:
             self.message_history.append({"role": "user", "content": user_input})
-        message = self._call_api()
-        self.total_time += time.time() - t0
+        # 解析失败时内部重试API（模型消息未写入历史，重试干净无缝，不打断医患对话）
+        parse_retries = 2
+        while True:
+            message = self._call_api()
+            self.total_time += time.time() - t0
 
-        if hasattr(message, "tool_calls") and message.tool_calls:
-            tool_calls = message.tool_calls
-            self.message_history.append({
-                "role": "assistant", "content": message.content or "",
-                "tool_calls": [{"id": tc.id, "type": "function",
-                    "function": {"name": tc.function.name, "arguments": tc.function.arguments}} for tc in tool_calls],
-            })
-            self.tool_call_count += len(tool_calls)
-            return Response(assistant="MedAgent", type="function_call",
-                messages=message.content,
-                tool_calls=[{"id": tc.id, "name": tc.function.name,
-                    "arguments": json.loads(tc.function.arguments)} for tc in tool_calls])
+            if hasattr(message, "tool_calls") and message.tool_calls:
+                tool_calls = message.tool_calls
+                parsed = []
+                parse_failed = False
+                for tc in tool_calls:
+                    raw_args = (tc.function.arguments or '').strip()
+                    if raw_args in ('', '{}'):
+                        # 模型输出空参数：接受该调用，执行阶段会返回"参数缺失"错误给模型自行纠正
+                        parsed.append({"id": tc.id, "name": tc.function.name, "arguments": {}})
+                        continue
+                    args = _safe_json_loads(raw_args)
+                    if not args:
+                        # 完全无法解析：丢弃本批，重试或走恢复分支
+                        parse_failed = True
+                        break
+                    parsed.append({"id": tc.id, "name": tc.function.name, "arguments": args})
+                if parse_failed and parse_retries > 0:
+                    parse_retries -= 1
+                    continue
+                if parse_failed:
+                    # 解析失败（重试耗尽）：若最后一条是本次追加的user消息则回滚，否则不可pop
+                    # （chat(user_input=None)续接时最后一条可能是tool消息，pop会孤立上一条tool_calls导致API 400）
+                    if self.message_history and self.message_history[-1].get("role") == "user":
+                        self.message_history.pop()
+                    self.message_history.append({"role": "assistant",
+                        "content": (message.content or "") + "\n[系统] 工具参数格式解析失败，请重新调用工具。"})
+                    return Response(assistant="MedAgent", type="assistant_response", messages=message.content)
+                self.message_history.append({
+                    "role": "assistant", "content": message.content or "",
+                    "tool_calls": [{"id": tc.id, "type": "function",
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments}} for tc in tool_calls],
+                })
+                self.tool_call_count += len(tool_calls)
+                return Response(assistant="MedAgent", type="function_call",
+                    messages=message.content, tool_calls=parsed)
 
-        self.message_history.append({"role": "assistant", "content": message.content})
-        return Response(assistant="MedAgent", type="assistant_response", messages=message.content)
+            self.message_history.append({"role": "assistant", "content": message.content})
+            return Response(assistant="MedAgent", type="assistant_response", messages=message.content)
 
     def _execute_single_tool(self, tool_call: dict, hadm_id: str) -> Response:
         from tool_executors import FUNC_MAP
         func_name = tool_call["name"]
         executor = FUNC_MAP.get(func_name)
-        result = executor(hadm_id, **tool_call["arguments"]) if executor else f"Unknown: {func_name}"
+        try:
+            result = executor(hadm_id, **tool_call["arguments"]) if executor else f"Unknown: {func_name}"
+        except Exception as e:
+            # 参数缺失/格式错误等：返回错误信息给模型，让模型重新调用（保持API消息完整性）
+            result = (f"[工具调用参数错误] {func_name} 参数缺失或格式不正确（received {tool_call['arguments']}），"
+                      f"请重新调用并完整填写必填参数。错误信息: {e}")
         self.message_history.append({"role": "tool", "tool_call_id": tool_call["id"], "content": str(result)})
-        if func_name == "finalize_diagnosis":
+        if func_name == "finalize_diagnosis" and "[工具调用参数错误]" not in str(result):
             self.diagnosis_submitted = True
             return Response(assistant="MedAgent", type="diagnosis_submitted", messages=str(result))
         return Response(assistant="MedAgent", type="tool_result", messages=str(result))
@@ -390,7 +508,7 @@ class BasePatientAgent:
     """患者Agent基类"""
     def __init__(self, system_prompt_template: str, model: str = "deepseek-chat",
                  temperature: float = 0.7, max_tokens: int = 400):
-        self.client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
+        self.client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL, timeout=120.0)
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -407,7 +525,7 @@ class BasePatientAgent:
         self.message_history.append({"role": "user", "content": doctor_message})
         response = self.client.chat.completions.create(
             model=self.model, messages=self.message_history,
-            temperature=self.temperature, max_tokens=self.max_tokens)
+            temperature=self.temperature, max_tokens=self.max_tokens, extra_body={"thinking": {"type": "disabled"}})
         content = response.choices[0].message.content
         self.message_history.append({"role": "assistant", "content": content})
         self.total_time += time.time() - t0
@@ -423,4 +541,4 @@ class OriginalPatientAgent(BasePatientAgent):
 class RealisticPatientAgent(BasePatientAgent):
     """真实患者——混乱、矛盾、跑题，但回复长度受控"""
     def __init__(self, model: str = "deepseek-chat"):
-        super().__init__(system_prompt_template=REALISTIC_PATIENT_PROMPT, model=model, temperature=0.7, max_tokens=300)
+        super().__init__(system_prompt_template=REALISTIC_PATIENT_PROMPT, model=model, temperature=0.7, max_tokens=600)

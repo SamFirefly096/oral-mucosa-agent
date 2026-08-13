@@ -1,0 +1,334 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "source": "Extracted from agents_enhanced.py TextbookMedAgent + LearningMedAgent + ChiefMedAgent system prompts, agents.py MEDICAL_SYSTEM_PROMPT, and database.py SAMPLE_CASES",
+    "date": "2026-07-27",
+    "total_diseases": 11,
+    "format": "Structured for keyword-based retrieval during reflection phase"
+  },
+  "diseases": {
+    "oral_lichen_planus": {
+      "name_cn": "口腔扁平苔藓",
+      "name_en": "Oral Lichen Planus (OLP)",
+      "icd11": "DA01.1",
+      "tcm_disease_name": "口癣",
+      "clinical_subtypes": {
+        "reticular": {
+          "features": ["双侧颊黏膜对称性白色网状条纹", "Wickham纹(+)", "无自觉症状或轻微粗糙感"],
+          "typical_sites": ["双侧颊黏膜", "舌侧缘", "牙龈"]
+        },
+        "erosive": {
+          "features": ["白网纹基础上糜烂面", "进食辛辣灼痛加剧", "糜烂面边缘可见放射状白色条纹", "Nikolsky征(-)"],
+          "typical_sites": ["双侧颊黏膜", "舌腹"]
+        },
+        "atrophic": {
+          "features": ["弥漫性萎缩性红斑", "散在细微白色网状条纹", "烧灼感", "口干"],
+          "typical_sites": ["双侧颊黏膜弥漫", "舌腹"]
+        }
+      },
+      "diagnostic_criteria": {
+        "clinical": ["双侧对称性白色网状/丘疹样病变(Wickham纹)", "糜烂型伴有糜烂面", "病程慢性，反复发作"],
+        "pathology": ["鳞状上皮不规则增生", "基底细胞液化变性", "上皮下带状淋巴细胞浸润带", "胶样小体可见"],
+        "DIF": ["纤维蛋白原沿基底膜带线状沉积", "IgM阳性"]
+      },
+      "differential_diagnoses": ["慢性盘状红斑狼疮(DLE)", "苔藓样反应", "白斑", "瘢痕性类天疱疮"],
+      "key_differentiation": {
+        "vs_DLE": "DLE唇部好发+三区模式(萎缩+放射白纹+毛细血管扩张)+日晒加重；OLP双颊对称",
+        "vs_lichenoid": "苔藓样反应有药物史+沿咬合线分布+病理见嗜酸性粒细胞/浆细胞；OLP无药物诱因",
+        "vs_leukoplakia": "白斑不可擦除+触诊较硬+单侧多见；OLP白纹对称分布"
+      },
+      "tcm_syndromes": {
+        "糜烂型": ["肝郁气滞，兼有血瘀证", "脾胃湿热证"],
+        "萎缩型": ["阴虚津亏，虚火上炎证"],
+        "斑块型": ["痰湿内蕴，气机不畅证"]
+      },
+      "treatment": {
+        "western": "局部糖皮质激素(曲安奈德软膏)+全身泼尼松(糜烂型)+羟氯喹(顽固型)",
+        "tcm_example": "糜烂型：丹栀逍遥散合桃红四物汤加减(疏肝理气活血化瘀)；萎缩型：知柏地黄丸合一贯煎加减(滋阴生津清热降火)",
+        "prognosis": "慢性病程，可控制但难以根治，约1%恶变风险需每年随访"
+      }
+    },
+    "pemphigus_vulgaris": {
+      "name_cn": "寻常型天疱疮",
+      "name_en": "Pemphigus Vulgaris (PV)",
+      "icd11": "EB40.0",
+      "tcm_disease_name": "火赤疮",
+      "clinical_features": ["口腔多发糜烂/水疱", "疱壁薄易破(Nikolsky征阳性)", "剥脱性龈炎", "头皮和躯干松弛性水疱及结痂", "疼痛明显，进食困难", "体重下降"],
+      "diagnostic_criteria": {
+        "clinical": ["松弛性水疱+Nikolsky征阳性", "口腔+皮肤同时受累", "糜烂面不易愈合"],
+        "pathology": ["表皮内水疱", "棘层松解细胞(Tzanck细胞)", "基底细胞呈'墓碑状'排列于真皮乳头上"],
+        "DIF": ["IgG和C3沿棘细胞间网状沉积(鱼网状)"],
+        "serology": ["抗Dsg1升高", "抗Dsg3升高(口腔为主型更显著)"]
+      },
+      "differential_diagnoses": ["大疱性类天疱疮(BP)", "瘢痕性类天疱疮", "多形红斑", "副肿瘤性天疱疮"],
+      "key_differentiation": {
+        "vs_BP": "PV:表皮内疱+Nikolsky(+)+抗Dsg3↑；BP:表皮下疱+Nikolsky(-)+抗BP180↑+张力性水疱+老年多见",
+        "vs_EM": "EM:靶形红斑+药物/感染诱因+Nikolsky(-)+口唇出血性血痂",
+        "vs_MMP": "瘢痕性类天疱疮:眼/喉等黏膜瘢痕形成+表皮下疱+Nikolsky(-)"
+      },
+      "tcm_syndromes": {
+        "急性活动期": ["湿热毒蕴证"],
+        "激素治疗后阴虚火旺": ["阴虚火旺证"],
+        "缓解期/激素减量": ["气阴两虚证"]
+      },
+      "treatment": {
+        "western": "泼尼松1mg/kg/d+霉酚酸酯(激素助减)+局部曲安奈德软膏+补钙补D+胃保护",
+        "tcm_example": "急性期：龙胆泻肝汤合五味消毒饮加减(清热利湿凉血解毒)；缓解期：知柏地黄丸合二至丸(滋阴降火)",
+        "prognosis": "需住院控制急性期，规范治疗预后良好，需长期免疫抑制维持",
+        "admission_needed": true
+      }
+    },
+    "bullous_pemphigoid": {
+      "name_cn": "大疱性类天疱疮",
+      "name_en": "Bullous Pemphigoid (BP)",
+      "icd11": "EB41.0",
+      "tcm_disease_name": "天疱疮",
+      "clinical_features": ["张力性水疱(疱壁较厚、不易破)", "Nikolsky征阴性(关键鉴别点)", "口腔病较轻+不影响进食", "皮肤紧张性大疱和荨麻疹样斑块", "无生殖器/眼部累及", "老年患者多见"],
+      "diagnostic_criteria": {
+        "clinical": ["张力性水疱+Nikolsky征(-)", "口腔轻症+皮肤重症", "老年发病"],
+        "pathology": ["表皮下裂隙及大疱形成", "疱腔内嗜酸性粒细胞及中性粒细胞", "基底细胞完整(表皮下而非表皮内疱)"],
+        "DIF": ["IgG和C3沿基底膜带线状沉积"],
+        "serology": ["抗BP180显著升高(>100U/mL)", "抗BP230轻度升高或正常"]
+      },
+      "differential_diagnoses": ["寻常型天疱疮(PV)", "瘢痕性类天疱疮", "线状IgA大疱性皮病", "副肿瘤性天疱疮"],
+      "key_differentiation": {
+        "vs_PV": "BP:表皮下疱+Nikolsky(-)+抗BP180↑+张力性水疱+老年；PV:表皮内疱+Nikolsky(+)+抗Dsg3↑+松弛性水疱+中年"
+      },
+      "tcm_syndromes": {
+        "口腔+皮肤型": ["脾虚湿盛，气血不足证"]
+      },
+      "treatment": {
+        "western": "泼尼松0.5mg/kg/d+多西环素(抗炎)+必要时霉酚酸酯",
+        "tcm_example": "参苓白术散合当归补血汤加减(健脾益气祛湿养血)",
+        "prognosis": "自限性病程约2-5年，需长期免疫抑制，老年注意激素不良反应(骨质疏松/糖尿病/感染)"
+      }
+    },
+    "oral_candidiasis": {
+      "name_cn": "口腔念珠菌病(假膜型)",
+      "name_en": "Acute Pseudomembranous Oral Candidiasis",
+      "icd11": "1F23.0",
+      "tcm_disease_name": "鹅口疮",
+      "clinical_features": ["白色凝乳状假膜(可擦除，擦后基底充血)", "弥漫性覆盖硬软腭及颊黏膜", "口干感", "常见诱因：抗生素使用、糖尿病(HbA1c高)、免疫低下", "双侧口角可见皲裂(口角炎)"],
+      "diagnostic_criteria": {
+        "clinical": ["可擦除白色假膜+抗生素使用史/糖尿病+免疫低下"],
+        "microbiology": ["真菌涂片阳性", "Candida albicans培养阳性"],
+        "pathology": ["PAS染色示上皮表层大量真菌菌丝和孢子"]
+      },
+      "differential_diagnoses": ["白色海绵状斑痣", "口腔毛状白斑", "化学灼伤"],
+      "tcm_syndromes": {
+        "假膜型": ["脾虚湿困，湿热内蕴证"]
+      },
+      "treatment": {
+        "western": "制霉菌素混悬液含漱+咪康唑凝胶+必要时氟康唑(顽固型)",
+        "tcm_example": "参苓白术散合二妙散加减(健脾燥湿清热利湿)",
+        "prognosis": "预后良好，需控制血糖预防复发，反复发作考虑预防性抗真菌"
+      }
+    },
+    "recurrent_aphthous": {
+      "name_cn": "复发性阿弗他口炎(轻型)",
+      "name_en": "Recurrent Aphthous Stomatitis (RAS), Minor",
+      "icd11": "DA01.1",
+      "tcm_disease_name": "口疮",
+      "clinical_features": ["反复发作口腔溃疡(≥3年)", "非角化黏膜(唇内侧/舌腹/舌侧缘)", "圆形/椭圆形溃疡+周围红晕+黄色假膜", "直径0.3-0.8cm", "每次发作持续10-14天自愈", "诱因：压力增大/睡眠不足/饮食", "家族史常阳性"],
+      "diagnostic_criteria": {
+        "clinical": ["反复发作史+非角化黏膜+圆形溃疡+家族史", "自限性10-14天愈合", "无生殖器溃疡/眼炎/皮肤病变(排除白塞病)"],
+        "lab": ["无特异性异常", "可查血清铁/叶酸/B12排除营养缺乏"],
+        "exclusion": ["排除白塞病(需眼科+皮肤科会诊)"]
+      },
+      "differential_diagnoses": ["白塞病", "疱疹性口炎", "创伤性溃疡"],
+      "tcm_syndromes": {
+        "轻型": ["脾胃湿热，心火上炎证", "阴虚火旺证"]
+      },
+      "treatment": {
+        "western": "局部曲安奈德软膏+苯扎氯铵含漱液+秋水仙碱(频繁复发)+维生素B12/叶酸补充",
+        "tcm_example": "甘草泻心汤合导赤散加减(清热利湿清心泻火)",
+        "prognosis": "预后良好，随年龄增长发作频率可能降低"
+      }
+    },
+    "herpes_simplex": {
+      "name_cn": "原发性疱疹性龈口炎",
+      "name_en": "Primary Herpetic Gingivostomatitis",
+      "icd11": "1F00.0",
+      "tcm_disease_name": "口疮(疱疹性龈口炎)",
+      "clinical_features": ["发热后(39°C)迅速出现口唇和口腔内成簇小水疱", "水疱1-3mm→破溃融合成不规则糜烂", "龈缘红肿明显(疱疹性龈口炎)", "唇红缘及口周皮肤成簇水疱/结痂", "疼痛明显，患儿拒食拒饮水", "儿童多见，初次感染", "同班同学有类似症状(流行病学)"],
+      "diagnostic_criteria": {
+        "clinical": ["发热后成簇小水疱+龈口炎+初次感染+儿童"],
+        "microbiology": ["HSV-1 PCR阳性"],
+        "epidemiology": ["接触史/同班同学类似症状"]
+      },
+      "differential_diagnoses": ["疱疹性咽峡炎", "手足口病", "多形红斑"],
+      "tcm_syndromes": {
+        "原发性": ["风热外袭，热毒壅盛证"]
+      },
+      "treatment": {
+        "western": "阿昔洛韦15mg/kg 5x/d口服(72h内)+利多卡因胶浆(餐前止痛)+对乙酰氨基酚(退热)",
+        "tcm_example": "银翘散合五味消毒饮加减(疏风清热解毒凉血)",
+        "prognosis": "初次感染后HSV潜伏于三叉神经节，免疫力降低时可复发为唇疱疹"
+      }
+    },
+    "discoid_lupus": {
+      "name_cn": "口腔盘状红斑狼疮",
+      "name_en": "Oral Discoid Lupus Erythematosus (DLE)",
+      "icd11": "4A40.0",
+      "tcm_disease_name": "唇风",
+      "clinical_features": ["下唇好发，特征性'三区模式'：中央萎缩性红斑+周围放射状白色条纹+边缘毛细血管扩张", "日晒后加重", "无明显疼痛(与OLP不同)", "偶有面部红斑", "椒盐样色素改变"],
+      "diagnostic_criteria": {
+        "clinical": ["放射状白纹+中央萎缩+毛细血管扩张(三区模式)", "日晒加重+唇部好发+慢性病程"],
+        "pathology": ["表皮萎缩+基底细胞液化变性+真皮浅深层血管周淋巴细胞浸润+PAS基底膜增厚"],
+        "DIF": ["IgG、IgM、C3沿基底膜带颗粒状沉积(与OLP的线状不同)"],
+        "serology": ["ANA阳性(斑点型1:320)", "抗dsDNA可升高"],
+        "exclusion": ["需排除系统性红斑狼疮(SLE)"]
+      },
+      "differential_diagnoses": ["口腔扁平苔藓(OLP)", "系统性红斑狼疮口腔表现", "光化性唇炎"],
+      "tcm_syndromes": {
+        "口腔型": ["阴虚内热，兼有血瘀证"]
+      },
+      "treatment": {
+        "western": "防晒(SPF50)+局部曲安奈德软膏+羟氯喹200mg bid(需眼科基线检查)+泼尼松(急性发作)",
+        "tcm_example": "知柏地黄丸合桃红四物汤加减(滋阴清热活血化瘀)",
+        "prognosis": "约5-10%可进展为SLE，需长期随访，每6-12月眼科检查(羟氯喹视网膜毒性)"
+      }
+    },
+    "erythema_multiforme": {
+      "name_cn": "多形红斑(重型/口腔为主型)",
+      "name_en": "Erythema Multiforme (EM), Major",
+      "icd11": "EB12",
+      "tcm_disease_name": "猫眼疮(皮肤)+口糜(口腔)",
+      "clinical_features": ["口唇肿胀伴厚层出血性血痂(特征性)", "口腔内弥漫性糜烂和假膜，疼痛剧烈", "双手背和躯干散在靶形红斑(同心圆三层)", "药物诱因(磺胺类最常见)+感染诱因(HSV)", "发热38.5°C", "Nikolsky征(-)"],
+      "diagnostic_criteria": {
+        "clinical": ["药物/感染诱因+靶形红斑+口唇出血性结痂+皮肤累及", "急性发作+口腔疼痛剧烈"],
+        "pathology": ["界面性皮炎+角质形成细胞坏死(凋亡)", "表皮内及表皮下分离", "真皮浅层水肿+血管周淋巴细胞浸润"],
+        "DIF": ["非特异性"]
+      },
+      "differential_diagnoses": ["Stevens-Johnson综合征(SJS)", "寻常型天疱疮", "疱疹性口炎", "固定性药疹"],
+      "key_differentiation": {
+        "vs_SJS": "SJS:皮肤剥脱面积>10%或黏膜严重累及+系统症状+更高热；EM:靶形红斑为主+面积<10%",
+        "vs_PV": "EM:Nikolsky(-)+靶形红斑+药物诱因；PV:Nikolsky(+)+抗Dsg3↑"
+      },
+      "tcm_syndromes": {
+        "口腔+皮肤型": ["湿热毒蕴证"]
+      },
+      "treatment": {
+        "western": "泼尼松0.5mg/kg/d短期+阿昔洛韦(如HSV触发)+局部利多卡因止痛+补液",
+        "tcm_example": "龙胆泻肝汤合五味消毒饮加减(清热利湿凉血解毒)",
+        "prognosis": "多数预后良好2-4周恢复，需永久避免致敏药物，复发可能与HSV再激活相关",
+        "admission_needed": true
+      }
+    },
+    "leukoplakia": {
+      "name_cn": "口腔白斑(均质型，无异型增生)",
+      "name_en": "Oral Leukoplakia, Homogeneous, No Dysplasia",
+      "icd11": "DA01.0",
+      "tcm_disease_name": "白斑",
+      "clinical_features": ["均质白色斑块+不可擦除(关键特征)", "边界清晰但不规则", "触诊较硬", "无明显溃疡或疣状增生", "吸烟30年/饮酒30年(高危因素)", "缓慢增大"],
+      "diagnostic_criteria": {
+        "clinical": ["不可擦除的均质白色斑块+吸烟饮酒危险因素+排除摩擦性角化"],
+        "pathology": ["过度角化(正角化)+棘层肥厚+上皮脚延长", "无异型增生(关键——低风险)", "上皮下轻度慢性炎细胞浸润"]
+      },
+      "differential_diagnoses": ["摩擦性角化", "口腔扁平苔藓(斑块型)", "白色海绵状斑痣", "增殖性疣状白斑"],
+      "key_differentiation": {
+        "vs_frictional_keratosis": "摩擦性角化:对应牙尖/修复体边缘+去除刺激后消退",
+        "vs_OLP": "OLP:对称性分布+多部位+网状白纹",
+        "vs_white_sponge_nevus": "白色海绵状斑痣:自幼发病+双侧对称+海绵状柔软+家族史"
+      },
+      "tcm_syndromes": {
+        "均质型": ["痰湿内蕴，气机不畅证"]
+      },
+      "treatment": {
+        "western": "戒烟戒酒(核心)+每6月随访口腔检查",
+        "tcm_example": "二陈汤合桃红四物汤加减(化痰软坚理气活血)",
+        "prognosis": "无异型增生均质型白斑恶变风险<5%，需终身随访；出现疼痛/增大/溃疡/颜色改变随时就诊"
+      }
+    },
+    "anug": {
+      "name_cn": "急性坏死性溃疡性龈炎",
+      "name_en": "Acute Necrotizing Ulcerative Gingivitis (ANUG)",
+      "icd11": "DA0C.0",
+      "tcm_disease_name": "牙疳",
+      "clinical_features": ["龈乳头'火山口'状坏死缺损(特征性)", "表面覆盖灰白色假膜+去除后易出血", "腐败性口臭(特征性)", "牙龈剧痛+自发出血", "发热38°C+全身乏力", "应激/熬夜诱因(期末考试期间)", "颌下淋巴结肿大压痛", "年轻男性+吸烟"],
+      "diagnostic_criteria": {
+        "clinical": ["龈乳头火山口状坏死+腐败性口臭+自发出血+应激/熬夜诱因+年轻男性+吸烟"],
+        "lab": ["白细胞升高+CRP升高"],
+        "microbiology": ["混合厌氧菌感染(梭杆菌+普雷沃菌+螺旋体)"],
+        "exclusion": ["需排除HIV/AIDS", "需排除急性白血病(牙龈表现)"]
+      },
+      "differential_diagnoses": ["疱疹性龈口炎", "急性白血病牙龈表现", "坏死性牙周炎"],
+      "tcm_syndromes": {
+        "急性": ["胃火炽盛，热毒上攻证"]
+      },
+      "treatment": {
+        "western": "甲硝唑400mg tid×7d+氯己定含漱液+必要时阿莫西林(重症)+对乙酰氨基酚(止痛)",
+        "tcm_example": "清胃散合五味消毒饮加减(清胃泻火解毒凉血)",
+        "prognosis": "及时治疗预后良好，坏死龈乳头2-3周愈合，戒烟和口腔卫生维护是关键"
+      }
+    },
+    "lichenoid_reaction": {
+      "name_cn": "苔藓样反应(口腔)",
+      "name_en": "Oral Lichenoid Reaction",
+      "icd11": "DA01.1",
+      "tcm_disease_name": "口癣(苔藓样反应)",
+      "clinical_features": ["病变局限沿咬合线分布(非放射状)", "双侧对称+线状糜烂", "Wickham纹不如经典OLP明显", "药物诱因(如氨氯地平、NSAIDs等)", "换药时间关联+停药后改善", "无典型OLP的多部位分布"],
+      "diagnostic_criteria": {
+        "clinical": ["沿咬合线分布+换药时间关联+停药后改善+双侧对称", "去激发反应阳性(停药2周部分缓解)"],
+        "pathology": ["界面性皮炎+基底细胞液化变性+上皮下带状淋巴细胞浸润", "可见散在嗜酸性粒细胞及浆细胞浸润(与OLP不同——关键鉴别)"],
+        "DIF": ["纤维蛋白原沿BMZ线状沉积(非特异性，与OLP难以区分)"]
+      },
+      "differential_diagnoses": ["口腔扁平苔藓(OLP)", "移植物抗宿主病口腔表现", "接触性过敏反应"],
+      "key_differentiation": {
+        "vs_OLP": "苔藓样反应:药物史+沿咬合线局限分布+病理见嗜酸性粒细胞+停药可逆；OLP:多部位对称+无明确药物诱因"
+      },
+      "tcm_syndromes": {
+        "药物相关": ["药毒伤络，肝郁气滞证"]
+      },
+      "treatment": {
+        "western": "去除致病药物(氨氯地平换为氯沙坦)+局部曲安奈德软膏+避免机械刺激",
+        "tcm_example": "逍遥散加减(疏肝理气清热解毒)",
+        "prognosis": "去除致病药物后预后良好，通常6-8周内完全消退"
+      }
+    }
+  },
+  "tcm_knowledge": {
+    "tongue_pulse_mapping": [
+      {"tongue": "舌红苔黄腻+脉滑数", "syndrome": "脾胃湿热证/湿热内蕴证", "disease_hint": "PV/EM/ANUG急性期"},
+      {"tongue": "舌红少苔/无苔+脉细数", "syndrome": "阴虚火旺证", "disease_hint": "萎缩型OLP/RAU慢性/DLE"},
+      {"tongue": "舌暗红有瘀点+脉弦涩", "syndrome": "气滞血瘀证", "disease_hint": "OLP糜烂型/DLE/白斑"},
+      {"tongue": "舌淡胖有齿痕+脉濡", "syndrome": "脾虚湿困证", "disease_hint": "念珠菌病/BP"},
+      {"tongue": "舌红绛苔黄燥+脉洪数", "syndrome": "热毒炽盛证", "disease_hint": "急性重症感染"},
+      {"tongue": "舌尖红有红点+脉数", "syndrome": "心火上炎证", "disease_hint": "RAU/复发性口疮"},
+      {"tongue": "舌淡苔薄白+脉细弱", "syndrome": "气血两虚证", "disease_hint": "慢性消耗性/BMS"},
+      {"tongue": "舌淡暗苔白腻+脉弦", "syndrome": "痰湿内蕴证", "disease_hint": "白斑/OSF"},
+      {"tongue": "舌紫暗瘀斑+舌下络脉迂曲+脉涩", "syndrome": "痰瘀互结证", "disease_hint": "OSF/白斑恶变"},
+      {"tongue": "舌红少津+脉细数+五心烦热", "syndrome": "阴虚内热证", "disease_hint": "DLE/BMS/萎缩型OLP"}
+    ],
+    "disease_tcm_mapping": [
+      {"western": "口腔扁平苔藓(OLP)", "tcm_disease": "口癣", "subtype_syndromes": {"糜烂型": "肝郁气滞，兼有血瘀证/脾胃湿热证", "萎缩型": "阴虚津亏，虚火上炎证", "斑块型": "痰湿内蕴，气机不畅证"}},
+      {"western": "寻常型天疱疮(PV)", "tcm_disease": "火赤疮", "subtype_syndromes": {"急性活动期": "湿热毒蕴证", "缓解期": "气阴两虚证"}},
+      {"western": "大疱性类天疱疮(BP)", "tcm_disease": "天疱疮", "subtype_syndromes": {"口腔+皮肤": "脾虚湿盛，气血不足证"}},
+      {"western": "口腔念珠菌病", "tcm_disease": "鹅口疮", "subtype_syndromes": {"假膜型": "脾虚湿困，湿热内蕴证"}},
+      {"western": "复发性阿弗他溃疡(RAU)", "tcm_disease": "口疮", "subtype_syndromes": {"轻型": "脾胃湿热，心火上炎证/阴虚火旺证"}},
+      {"western": "疱疹性龈口炎(HSV)", "tcm_disease": "口疮", "subtype_syndromes": {"原发性": "风热外袭，热毒壅盛证"}},
+      {"western": "盘状红斑狼疮(DLE)", "tcm_disease": "唇风", "subtype_syndromes": {"口腔型": "阴虚内热，兼有血瘀证"}},
+      {"western": "多形红斑(EM)", "tcm_disease": "猫眼疮", "subtype_syndromes": {"口腔+皮肤": "湿热毒蕴证"}},
+      {"western": "坏死性溃疡性龈炎(ANUG)", "tcm_disease": "牙疳", "subtype_syndromes": {"急性": "胃火炽盛，热毒上攻证"}},
+      {"western": "口腔白斑", "tcm_disease": "白斑", "subtype_syndromes": {"均质型": "痰湿内蕴，气机不畅证"}},
+      {"western": "苔藓样反应", "tcm_disease": "口癣", "subtype_syndromes": {"药物相关": "药毒伤络，肝郁气滞证"}}
+    ],
+    "patent_medicines": [
+      {"name": "郁舒颗粒", "indication": "OLP肝郁气滞"},
+      {"name": "口炎清颗粒", "indication": "阴虚火旺型口疮"},
+      {"name": "知柏地黄丸", "indication": "阴虚火旺(OLP/RAU/BMS/DLE)"},
+      {"name": "龙胆泻肝丸", "indication": "肝胆湿热(急性期糜烂重者)"},
+      {"name": "参苓白术丸", "indication": "脾虚湿困(念珠菌病)"},
+      {"name": "血府逐瘀口服液", "indication": "气滞血瘀(OSF/DLE)"},
+      {"name": "雷公藤多苷片", "indication": "天疱疮激素助减(专科医师监控)"},
+      {"name": "生脉饮", "indication": "气阴两虚(SS/BMS)"},
+      {"name": "杞菊地黄丸", "indication": "肝肾阴虚伴眼干(SS)"}
+    ]
+  },
+  "differential_diagnosis_rules": [
+    {"symptom": "口腔糜烂/溃疡", "first_rule_out": ["天疱疮(查Nikolsky征)", "大疱性疾病"], "then_consider": ["OLP", "EM", "过敏性口炎"]},
+    {"symptom": "白色病变", "first_rule_out": ["念珠菌病(擦除试验)", "摩擦性角化(去除刺激)"], "then_consider": ["白斑", "OLP", "DLE", "白色海绵状斑痣"]},
+    {"symptom": "水疱", "first_rule_out": ["天疱疮vs类天疱疮(Nikolsky征+病理)", "病毒性(HSV/VZV PCR)"], "then_consider": ["EM", "BP"]},
+    {"symptom": "唇部病损", "first_rule_out": ["DLE(三区模式)", "EM(出血性血痂)", "光化性唇炎(日晒)"], "then_consider": ["慢性唇炎"]}
+  ]
+}

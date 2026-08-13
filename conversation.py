@@ -18,7 +18,7 @@ def run_conversation(
     patient_agent: PatientAssistant,
     patient_context: PatientContext,
     primary_complaint: str,
-    max_turns: int = 30,
+    max_turns: int = 40,
     verbose: bool = True,
 ) -> dict:
     """
@@ -87,14 +87,15 @@ def run_conversation(
                 if tool_response.type == "diagnosis_submitted":
                     if not reflection_done:
                         reflection_done = True
-                        # 注入反思提示
+
+                        # 第一轮：自反思核查
                         reflection_prompt = (
                             "【自反思核查】在最终确定诊断前，请进行以下核查：\n"
                             "1. 我是否遗漏了任何关键信息（用药史、家族史、系统性疾病史）？\n"
                             "2. 鉴别诊断是否充分排除了临床表现相似的其他疾病？\n"
                             "3. 诊断能否解释患者的所有临床表现？\n"
                             "4. 诊断依据是否引用了文献支持？\n\n"
-                            "如有遗漏或需要修正，请重新调用 finalize_diagnosis。如已完备，回复'诊断确认无误'。"
+                            "如有遗漏或需要修正，请重新调用 finalize_diagnosis 提交修正后的诊断。如已完备，回复'诊断确认无误'。"
                         )
                         med_agent.message_history.append({"role": "user", "content": reflection_prompt})
                         resp = med_agent.chat(user_input=None)
@@ -108,11 +109,128 @@ def run_conversation(
                         })
                         if verbose:
                             print(f"\n  [REFLECTION] {resp.messages[:200] if resp.messages else ''}...")
-                        # 处理反思后的工具调用
-                        resp, _ = _handle_med_response(resp)
-                    med_agent.completed = True
-                    return Response(assistant="MedAgent", type="terminated",
-                                    messages="诊断完成（含自反思核查）"), extra_turns
+
+                        # 检查反思响应
+                        if resp.type == "function_call" and resp.tool_calls:
+                            # Agent在反思中调用了工具（可能是finalize_diagnosis修正，也可能是补查）
+                            for tc in resp.tool_calls:
+                                if tc.get('name') == 'finalize_diagnosis':
+                                    # 接受修正
+                                    tool_resp = med_agent._execute_single_tool(tc, patient_context.hadm_id)
+                                    conversation_log.append({
+                                        "turn": turn + 1,
+                                        "role": "Tool({})".format(tc['name']),
+                                        "content": tool_resp.messages,
+                                        "type": "terminated",
+                                        "tool_call": tc,
+                                    })
+                                    med_agent.completed = True
+                                    return Response(assistant="MedAgent", type="terminated", messages="诊断完成（修正后）"), extra_turns
+                                else:
+                                    # 其他工具调用（补检查）
+                                    tool_resp = med_agent._execute_single_tool(tc, patient_context.hadm_id)
+                                    conversation_log.append({
+                                        "turn": turn + 1,
+                                        "role": "Tool({})".format(tc['name']),
+                                        "content": tool_resp.messages,
+                                        "type": "tool_result",
+                                        "tool_call": tc,
+                                    })
+                            # 获取补充工具后的LLM响应
+                            resp = med_agent.chat(user_input=None)
+                            turn += 1
+                            conversation_log.append({
+                                "turn": turn,
+                                "role": "MedAgent(post-reflection)",
+                                "content": resp.messages,
+                                "type": resp.type,
+                            })
+                            # 递归处理可能的后续调用
+                            resp, extra_turns2 = _handle_med_response(resp)
+                            extra_turns += extra_turns2
+
+                        elif resp.messages and any(kw in resp.messages for kw in [
+                            '确认无误', '诊断无误', '不需要修正', '诊断已经完备', '确认诊断'
+                        ]):
+                            # Agent确认，直接完成
+                            med_agent.completed = True
+                            return Response(assistant="MedAgent", type="terminated", messages="诊断确认（含自反思核查）"), extra_turns
+
+                        else:
+                            # Agent不确定——DeepRare模式：回到信息收集，补充患者问答
+                            if verbose:
+                                print(f"\n  [DEEPRARE-MODE] 反思后不确定，补充问诊...")
+
+                            # 注入补问提示
+                            followup_prompt = (
+                                "你对当前诊断尚不确定。请回顾对话记录，判断是否有遗漏的关键信息，"
+                                "然后向患者提出1-2个最重要的补充问题。不要重复已经问过的问题。"
+                            )
+                            med_agent.message_history.append({"role": "user", "content": followup_prompt})
+                            resp = med_agent.chat(user_input=None)
+                            turn += 1
+                            extra_turns += 1
+                            conversation_log.append({
+                                "turn": turn,
+                                "role": "MedAgent(followup)",
+                                "content": resp.messages,
+                                "type": resp.type,
+                            })
+                            if verbose:
+                                print(f"  [FOLLOWUP-Q] {resp.messages[:150] if resp.messages else ''}...")
+
+                            if resp.messages:
+                                # 患者回答
+                                pat_resp = patient_agent.chat(resp.messages)
+                                turn += 1
+                                extra_turns += 1
+                                conversation_log.append({
+                                    "turn": turn,
+                                    "role": "PatientAgent(followup)",
+                                    "content": pat_resp.messages,
+                                    "type": "patient_response",
+                                })
+                                if verbose:
+                                    print(f"  [FOLLOWUP-A] {pat_resp.messages[:150] if pat_resp.messages else ''}...")
+
+                                # 医生根据新信息重新响应
+                                resp = med_agent.chat(pat_resp.messages)
+                                turn += 1
+                                extra_turns += 1
+                                conversation_log.append({
+                                    "turn": turn,
+                                    "role": "MedAgent(post-followup)",
+                                    "content": resp.messages,
+                                    "type": resp.type,
+                                })
+                                if verbose:
+                                    print(f"  [POST-FOLLOWUP] {resp.messages[:150] if resp.messages else ''}...")
+
+                                # 处理可能的工具调用
+                                resp, extra_turns2 = _handle_med_response(resp)
+                                extra_turns += extra_turns2
+
+                                if resp.type == "diagnosis_submitted" or resp.type == "terminated":
+                                    med_agent.completed = True
+                                    return Response(assistant="MedAgent", type="terminated", messages="诊断完成（DeepRare模式：反思+补问后诊断）"), extra_turns
+
+                            # 如果补问后仍无诊断，强制完成
+                            if not med_agent.completed:
+                                if verbose:
+                                    print(f"\n  [FORCE-FINISH] 补问后仍未诊断，强制要求最终判断...")
+                                force_resp = med_agent.force_finish(patient_context.hadm_id)
+                                conversation_log.append({
+                                    "turn": turn + 1,
+                                    "role": "MedAgent(forced)",
+                                    "content": force_resp.messages,
+                                    "type": "terminated",
+                                })
+                                med_agent.completed = True
+                                return Response(assistant="MedAgent", type="terminated", messages="强制完成"), extra_turns
+                    else:
+                        # 已完成反思，直接标记完成
+                        med_agent.completed = True
+                        return Response(assistant="MedAgent", type="terminated", messages="诊断完成"), extra_turns
 
             # 第二阶段：获取 LLM 后续响应
             resp = med_agent.chat(user_input=None)
