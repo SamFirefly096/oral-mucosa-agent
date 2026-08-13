@@ -38,3 +38,7 @@ data/*.bak*
 # Database backups
 data/*.db.backup
 data/*.db.bak*
+
+# 实验备份文件
+*.bak
+*.bak.*
