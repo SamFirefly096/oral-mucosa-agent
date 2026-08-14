@@ -1,0 +1,10 @@
+{
+  "name": "文档工作流 docflow",
+  "idPrefix": "docf",
+  "purpose": "上传/解析 docx、pdf、ppt、txt，生成/修改精美文档（docx/pptx/pdf）。v10：fs/shell 显式工作区沙箱策略。",
+  "engineRoot": "/opt/oral-mucosa-agent/.docflow",
+  "hostSource": "/opt/oral-mucosa-agent/.docflow/plugin/docflow-host.js",
+  "clientSource": "/opt/oral-mucosa-agent/.docflow/plugin/docflow-client.js",
+  "restore": "在会话中用 cordis_define(kind=new, idPrefix='docf') 提交 hostSource/clientSource 两文件的内容（code.host 与 code.client），然后用 cordis_run(mode=run) 激活；client 半体需要用户批准一次。",
+  "updatedAt": "2026-08-14"
+}

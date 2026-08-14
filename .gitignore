@@ -43,5 +43,8 @@ data/*.db.bak*
 *.bak
 *.bak.*
 
-# 文档工作流插件运行时文件（.docflow venv / 上传 / 生成物）
-.docflow/
+# 文档工作流插件 — 运行时文件不入库（venv / 上传 / 生成物 / 临时文件）
+.docflow/venv/
+.docflow/uploads/
+.docflow/outputs/
+.docflow/tmp/
