@@ -57,6 +57,7 @@ let testTitle = "医学生", testHideTutor = false, testShowRefOnly = false;
 function init() {
   loadCases();
   setupScrollButton();
+  tryRestoreLocalSession();
   document.addEventListener("click", (e) => {
     if (!e.target.closest(".dropdown")) {
       document.querySelectorAll(".dropdown-menu.show").forEach(m => m.classList.remove("show"));
@@ -103,7 +104,7 @@ function scrollToBottom() {
 }
 
 /* ── 模式切换 ── */
-function switchMode(mode) {
+function setModeUI(mode) {
   currentMode = mode;
   const tabs = document.querySelectorAll(".tab");
   const idx = mode === "training" ? 0 : (mode === "test" ? 1 : 2);
@@ -114,6 +115,10 @@ function switchMode(mode) {
   document.getElementById("endBtn").style.display = (mode === "training" || mode === "test") ? "inline-block" : "none";
   document.getElementById("scorePanel").classList.remove("show");
   testTitle = "医学生"; testHideTutor = false; testShowRefOnly = false;
+}
+
+function switchMode(mode) {
+  setModeUI(mode);
   resetSession();
   // Test mode: show title selector immediately
   if (mode === "test") {
@@ -150,6 +155,7 @@ function startTraining() {
     .then(({ ok, data: d }) => {
       if (!ok) throw new Error(d.error || "启动失败");
       sessionId = d.session_id;
+      saveLocalSession();
       document.getElementById("chatArea").innerHTML = "";
       addMessage("patient", d.first_message);
       enableChat(true);
@@ -192,6 +198,7 @@ function startTest() {
     .then(({ ok, data: d }) => {
       if (!ok) throw new Error(d.error || "启动失败");
       sessionId = d.session_id;
+      saveLocalSession();
       document.getElementById("chatArea").innerHTML = "";
       addMessage("patient", d.first_message);
       enableChat(true);
@@ -221,6 +228,7 @@ function startConsult() {
     .then(({ ok, data: d }) => {
       if (!ok) throw new Error(d.error || "启动失败");
       sessionId = d.session_id;
+      saveLocalSession();
       document.getElementById("chatArea").innerHTML = "";
       addMessage("doctor", d.first_message);
       enableChat(true);
@@ -554,6 +562,7 @@ function setChatHTML(html) {
 /* ── 重置 ── */
 function resetSession() {
   sessionId = null;
+  clearLocalSession();
   const area = document.getElementById("chatArea");
   const training = currentMode === "training";
   const testMode = currentMode === "test";
@@ -580,6 +589,149 @@ function resetSession() {
     if (el) el.style.display = "";
   });
   testTitle = "医学生"; testHideTutor = false; testShowRefOnly = false;
+}
+
+/* ── 历史会话：localStorage 记住当前会话 + 服务器列表恢复 ── */
+function saveLocalSession() {
+  try {
+    localStorage.setItem("om_session", JSON.stringify({ session_id: sessionId, mode: currentMode }));
+  } catch (e) { /* storage 不可用时忽略 */ }
+}
+
+function clearLocalSession() {
+  try { localStorage.removeItem("om_session"); } catch (e) { /* ignore */ }
+}
+
+// 用服务器返回的会话数据重建聊天界面（继续对话）
+function applyRestoredSession(d, silent) {
+  const mode = d.mode || "training";
+  setModeUI(mode);
+  sessionId = d.session_id;
+  testTitle = d.title || "医学生";
+
+  const area = document.getElementById("chatArea");
+  area.innerHTML = "";
+  (d.history || []).forEach(h => {
+    if (h.role === "system") addSystemMsg(h.content);
+    else addMessage(h.role, h.content);
+  });
+
+  if (mode === "training" || mode === "test") {
+    document.getElementById("endBtn").style.display = "inline-block";
+    document.getElementById("examToolbar").style.display = "flex";
+    document.getElementById("statusBar").style.display = "flex";
+    document.getElementById("statusText").textContent = mode === "test" ? `测试中 (${testTitle})` : "问诊中";
+    const cc = cases.find(x => x.id === d.case_id);
+    const pi = d.patient_info || {};
+    document.getElementById("caseLabel").textContent =
+      `${cc ? cc.display : d.case_id} | ${pi.age || "?"}岁${pi.gender || ""}`;
+    const sel = document.getElementById("caseSelect");
+    if (Array.from(sel.options).some(o => o.value === d.case_id)) sel.value = d.case_id;
+  } else {
+    document.getElementById("statusBar").style.display = "flex";
+    document.getElementById("statusText").textContent = "咨询中";
+  }
+
+  if (d.resumable === false) {
+    // 服务端状态已丢失（仅磁盘记录）：只读查看
+    enableChat(false);
+    document.getElementById("msgInput").placeholder = "该会话仅可查看（服务端状态已失效）";
+    clearLocalSession();
+    if (!silent) toast("该会话仅可查看，无法继续对话", "warn");
+  } else {
+    enableChat(true);
+    saveLocalSession();
+    if (!silent) toast("已恢复历史会话，可继续对话", "success");
+  }
+}
+
+async function fetchSessionHistory(sid) {
+  const r = await api("/api/chat/history?session_id=" + encodeURIComponent(sid));
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || "加载失败");
+  return d;
+}
+
+// 页面加载时自动恢复上次会话（刷新页面不再丢失聊天记录）
+function tryRestoreLocalSession() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem("om_session") || "null"); } catch (e) { saved = null; }
+  if (!saved || !saved.session_id) return;
+  fetchSessionHistory(saved.session_id)
+    .then(d => applyRestoredSession(d, false))
+    .catch(() => {
+      // 服务器不可达（如正在重启）：保留记录，下次再试
+      if (!navigator.onLine) return;
+    });
+}
+
+/* ── 历史会话面板 ── */
+function openHistory() {
+  document.getElementById("historyModal").classList.add("show");
+  loadHistoryList();
+}
+
+function closeHistory() {
+  document.getElementById("historyModal").classList.remove("show");
+}
+
+async function loadHistoryList() {
+  const box = document.getElementById("historyList");
+  box.innerHTML = '<div class="spinner"></div><p style="text-align:center;margin-top:10px">加载中...</p>';
+  try {
+    const r = await api("/api/sessions");
+    if (!r.ok) throw new Error("加载失败");
+    const list = await r.json();
+    if (!list.length) {
+      box.innerHTML = '<div class="empty-state"><div class="icon">&#x1F4ED;</div><p>暂无历史会话</p></div>';
+      return;
+    }
+    box.innerHTML = "";
+    list.forEach(s => {
+      const ts = new Date(s.last_active * 1000);
+      const time = isNaN(ts.getTime()) ? "" :
+        ts.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+      const isConsult = s.mode === "consult";
+      const name = isConsult ? "患者咨询" : `${s.case_display || s.case_id}${s.mode === "test" ? ` · ${escapeHTML(s.title)}` : ""}`;
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:10px;padding:10px 8px;border-bottom:1px solid #eef1f6;font-size:12px";
+      row.innerHTML = `
+        <span style="background:${isConsult ? "#dbeafe" : "#fef3c7"};color:${isConsult ? "#1d4ed8" : "#92400e"};padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;flex-shrink:0">${s.mode_label}</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${name}</div>
+          <div style="color:#888;font-size:10px;margin-top:2px">${time} · ${s.msg_count} 条消息</div>
+        </div>
+        <button class="btn btn-primary" onclick="restoreSession('${s.session_id}')" style="padding:4px 12px;font-size:11px">继续</button>
+        <button class="btn btn-outline" onclick="deleteSession('${s.session_id}')" style="padding:4px 10px;font-size:11px;color:#dc2626;border-color:#fca5a5">删除</button>`;
+      box.appendChild(row);
+    });
+  } catch (e) {
+    box.innerHTML = `<p style="color:#f87171;text-align:center;padding:20px">加载失败: ${escapeHTML(e.message)}</p>`;
+  }
+}
+
+async function restoreSession(sid) {
+  try {
+    const d = await fetchSessionHistory(sid);
+    closeHistory();
+    applyRestoredSession(d, false);
+  } catch (e) {
+    toast(e.message, "error");
+  }
+}
+
+async function deleteSession(sid) {
+  if (!confirm("确定删除该历史会话？删除后无法恢复。")) return;
+  try {
+    const r = await api("/api/sessions/" + encodeURIComponent(sid), { method: "DELETE" });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || "删除失败");
+    if (sessionId === sid) resetSession();
+    loadHistoryList();
+    toast("已删除", "success");
+  } catch (e) {
+    toast(e.message, "error");
+  }
 }
 
 /* ── 随机病例 ── */
@@ -845,6 +997,7 @@ document.addEventListener("keydown", e => {
     closeModal();
     closeDetail();
     document.getElementById("diagModal")?.classList.remove("show");
+    document.getElementById("historyModal")?.classList.remove("show");
   }
   if (e.ctrlKey && e.key === "Enter" && currentMode === "training" && sessionId) {
     endConsultation();

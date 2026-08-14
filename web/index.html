@@ -171,7 +171,10 @@ body{font-family:'Microsoft YaHei','PingFang SC',-apple-system,sans-serif;backgr
     <h1>&#x1F9B7; 口腔黏膜病AI诊断Agent</h1>
     <div class="subtitle">基于 DeepSeek V4 Pro — 中西医结合智能诊疗系统</div>
   </div>
-  <div class="svc" onclick="toggleDebug()" title="调试面板" style="cursor:pointer"><span id="svcDot" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#4ade80"></span> 服务就绪</div>
+  <div style="display:flex;align-items:center;gap:10px">
+    <button class="btn" onclick="openHistory()" title="查看/继续历史会话" style="background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.28);font-size:12px">&#x1F4C1; 历史会话</button>
+    <div class="svc" onclick="toggleDebug()" title="调试面板" style="cursor:pointer"><span id="svcDot" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#4ade80"></span> 服务就绪</div>
+  </div>
 </div>
 
 <div class="container">
@@ -292,6 +295,20 @@ body{font-family:'Microsoft YaHei','PingFang SC',-apple-system,sans-serif;backgr
   </div>
 </div>
 
+<!-- 历史会话弹窗 -->
+<div class="modal-overlay" id="historyModal">
+  <div class="modal" style="max-width:640px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h3 style="margin:0">&#x1F4C1; 历史会话</h3>
+      <button class="btn btn-outline" onclick="closeHistory()" style="font-size:11px">&#x2715; 关闭</button>
+    </div>
+    <p style="font-size:11px;color:#888;margin-bottom:8px">会话保存在服务器，刷新页面、服务重启后仍可继续。</p>
+    <div id="historyList" style="max-height:55vh;overflow-y:auto">
+      <div class="spinner"></div><p style="text-align:center;margin-top:10px">加载中...</p>
+    </div>
+  </div>
+</div>
+
 <!-- 职称选择弹窗（测试模式） -->
 <div class="modal-overlay" id="titleModal">
   <div class="modal">
@@ -348,6 +365,6 @@ body{font-family:'Microsoft YaHei','PingFang SC',-apple-system,sans-serif;backgr
   </div>
 </div>
 
-<script src="app.js?v=20260709b"></script>
+<script src="app.js?v=20260816a"></script>
 </body>
 </html>

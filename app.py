@@ -3,7 +3,7 @@
 模式1: 医学生训练 (RealisticPatientAgent)
 模式2: 患者咨询 (ChiefMedAgent)
 """
-import sys, os, json, random
+import sys, os, json, random, time, threading
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["MIRA_ENABLE_THINKING"] = "false"
 
@@ -49,6 +49,140 @@ for _f in _glob.glob(PHOTO_DIR + "/*"):
 
 # ── Session store ──
 sessions = {}  # session_id -> {mode, agent, patient_agent, ctx, history}
+
+# ── Session persistence ──
+# 会话落盘到 outputs/web_sessions/（outputs 已被 .gitignore 排除），
+# 服务重启/自动部署后自动恢复，历史会话不再丢失。
+SESSION_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "web_sessions")
+MAX_SESSIONS = 100
+_session_lock = threading.Lock()
+
+def _agent_to_dict(agent):
+    """序列化 Agent 的可重建状态（不含 API client）。"""
+    if agent is None:
+        return None
+    d = {"type": type(agent).__name__, "model": agent.model,
+         "message_history": getattr(agent, "message_history", [])}
+    if hasattr(agent, "temperature"): d["temperature"] = agent.temperature
+    if hasattr(agent, "max_tokens"): d["max_tokens"] = agent.max_tokens
+    if hasattr(agent, "thinking"): d["thinking"] = agent.thinking
+    for k in ("tool_call_count", "current_step", "completed", "diagnosis_submitted", "total_time"):
+        if hasattr(agent, k): d[k] = getattr(agent, k)
+    return d
+
+def _agent_from_dict(d, ctx=None):
+    """从序列化状态重建 Agent（不调用 LLM）。"""
+    if not d:
+        return None
+    t = d.get("type")
+    model = d.get("model", "deepseek-chat")
+    agent = None
+    if t == "RealisticPatientAgent":
+        agent = RealisticPatientAgent(model=model)
+        if ctx:
+            agent.init_with_patient(PatientContext(
+                hadm_id=ctx.get("hadm_id", ""),
+                patient_info_text=ctx.get("patient_info_text", ""),
+                age=ctx.get("age"), gender=ctx.get("gender")))
+    elif t == "ChiefMedAgent":
+        agent = ChiefMedAgent(model=model, thinking=bool(d.get("thinking", False)))
+    if agent is None:
+        return None
+    agent.message_history = d.get("message_history") or agent.message_history
+    if "temperature" in d: agent.temperature = d["temperature"]
+    if "max_tokens" in d: agent.max_tokens = d["max_tokens"]
+    for k in ("tool_call_count", "current_step", "completed", "diagnosis_submitted", "total_time"):
+        if k in d: setattr(agent, k, d[k])
+    return agent
+
+def _session_file(session_id):
+    return os.path.join(SESSION_DIR, f"{session_id}.json")
+
+def _save_session(session_id):
+    """将单个会话原子写入磁盘，并裁剪超过上限的旧会话。"""
+    s = sessions.get(session_id)
+    if not s:
+        return
+    try:
+        os.makedirs(SESSION_DIR, exist_ok=True)
+        payload = {
+            "session_id": session_id,
+            "mode": s.get("mode"),
+            "case_id": s.get("case_id"),
+            "title": s.get("title", "医学生"),
+            "started_at": s.get("started_at", ""),
+            "last_active": s.get("last_active", 0.0),
+            "patient_info": s.get("patient_info"),
+            "ctx": s.get("_ctx"),
+            "history": s.get("history", []),
+            "patient_agent": _agent_to_dict(s.get("patient_agent")),
+            "doctor_agent": _agent_to_dict(s.get("doctor_agent")),
+        }
+        tmp = _session_file(session_id) + ".tmp"
+        with _session_lock:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+            os.replace(tmp, _session_file(session_id))
+        _prune_sessions()
+    except Exception as e:
+        print(f"[sessions] save {session_id} failed: {e}", flush=True)
+
+def _load_sessions():
+    """启动时从磁盘恢复全部会话（Agent 用保存的 message_history 重建）。"""
+    try:
+        os.makedirs(SESSION_DIR, exist_ok=True)
+    except Exception:
+        return
+    files = sorted(_glob.glob(os.path.join(SESSION_DIR, "*.json")),
+                   key=os.path.getmtime, reverse=True)
+    restored = 0
+    for fp in files:
+        sid = os.path.basename(fp)[:-5]
+        try:
+            with open(fp, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            mode = d.get("mode")
+            if mode not in ("training", "test", "consult"):
+                continue
+            ctx = d.get("ctx")
+            sessions[sid] = {
+                "mode": mode,
+                "case_id": d.get("case_id"),
+                "patient_agent": _agent_from_dict(d.get("patient_agent"), ctx),
+                "doctor_agent": _agent_from_dict(d.get("doctor_agent")),
+                "ctx": None,
+                "history": d.get("history", []),
+                "title": d.get("title", "医学生"),
+                "started_at": d.get("started_at", ""),
+                "last_active": d.get("last_active", 0.0),
+                "patient_info": d.get("patient_info"),
+                "_ctx": ctx,
+                "_restored": True,
+            }
+            restored += 1
+        except Exception as e:
+            print(f"[sessions] skip restore {sid}: {e}", flush=True)
+    if restored:
+        print(f"[sessions] restored {restored} session(s) from disk", flush=True)
+
+def _prune_sessions():
+    """保留最新 MAX_SESSIONS 个会话（磁盘+内存同步裁剪）。"""
+    try:
+        files = sorted(_glob.glob(os.path.join(SESSION_DIR, "*.json")),
+                       key=os.path.getmtime, reverse=True)
+        with _session_lock:
+            for fp in files[MAX_SESSIONS:]:
+                sid = os.path.basename(fp)[:-5]
+                try:
+                    os.remove(fp)
+                except OSError:
+                    pass
+                sessions.pop(sid, None)
+    except Exception:
+        pass
+
+# 启动时恢复历史会话
+_load_sessions()
 
 @app.route("/")
 def index():
@@ -197,6 +331,8 @@ def start_chat():
     mode = data.get("mode", "training")  # "training", "test", or "consult"
     case_id = data.get("case_id", "")
     session_id = str(random.randint(10000, 99999))
+    while session_id in sessions:
+        session_id = str(random.randint(10000, 99999))
 
     if mode in ("training", "test"):
         # Medical student interviews a realistic patient
@@ -228,6 +364,13 @@ def start_chat():
             "history": [],
             "title": title,
             "started_at": __import__("datetime").datetime.now().isoformat(),
+            "last_active": time.time(),
+            "_ctx": {
+                "hadm_id": case_id,
+                "patient_info_text": hpi,
+                "age": patient.get("age"),
+                "gender": patient.get("gender"),
+            },
             "patient_info": {
                 "age": patient.get("age"),
                 "gender": "女" if patient.get("gender") == "F" else "男",
@@ -239,6 +382,7 @@ def start_chat():
         starter = "医生您好，我来看病。"
         resp = pat.chat(starter)
         sessions[session_id]["history"].append({"role": "patient", "content": resp.messages})
+        _save_session(session_id)
 
         return jsonify({
             "session_id": session_id,
@@ -257,9 +401,15 @@ def start_chat():
             "patient_agent": None,
             "ctx": None,
             "history": [],
+            "title": "患者咨询",
+            "started_at": __import__("datetime").datetime.now().isoformat(),
+            "last_active": time.time(),
+            "_ctx": None,
+            "patient_info": None,
         }
         greeting = "您好，我是口腔黏膜病主任医师。请问您有什么口腔问题需要咨询？请详细描述您的症状，包括部位、持续时间、有无疼痛等。"
         sessions[session_id]["history"].append({"role": "doctor", "content": greeting})
+        _save_session(session_id)
         return jsonify({
             "session_id": session_id,
             "mode": mode,
@@ -286,6 +436,8 @@ def send_message():
         resp = pat.chat(message)
         session["history"].append({"role": "student", "content": message})
         session["history"].append({"role": "patient", "content": resp.messages})
+        session["last_active"] = time.time()
+        _save_session(session_id)
         return jsonify({
             "response": resp.messages,
             "role": "patient",
@@ -309,6 +461,8 @@ def send_message():
             resp = chief.chat(user_input=None)
 
         session["history"].append({"role": "doctor", "content": resp.messages})
+        session["last_active"] = time.time()
+        _save_session(session_id)
         return jsonify({
             "response": resp.messages,
             "role": "doctor",
@@ -346,10 +500,70 @@ def serve_photo(subpath):
 
 @app.route("/api/chat/history", methods=["GET"])
 def get_history():
+    """返回会话元信息+完整记录。内存缺失时回退到磁盘（只读）。"""
     session_id = request.args.get("session_id", "")
-    if session_id not in sessions:
+    s = sessions.get(session_id)
+    if s is None:
+        try:
+            fp = _session_file(session_id)
+            if os.path.exists(fp):
+                with open(fp, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                return jsonify({
+                    "session_id": session_id,
+                    "mode": d.get("mode"),
+                    "title": d.get("title", "医学生"),
+                    "case_id": d.get("case_id"),
+                    "patient_info": d.get("patient_info"),
+                    "started_at": d.get("started_at", ""),
+                    "history": d.get("history", []),
+                    "resumable": False,
+                })
+        except Exception:
+            pass
         return jsonify({"error": "会话不存在"}), 400
-    return jsonify(sessions[session_id]["history"])
+    return jsonify({
+        "session_id": session_id,
+        "mode": s["mode"],
+        "title": s.get("title", "医学生"),
+        "case_id": s.get("case_id"),
+        "patient_info": s.get("patient_info"),
+        "started_at": s.get("started_at", ""),
+        "history": s["history"],
+        "resumable": True,
+    })
+
+@app.route("/api/sessions", methods=["GET"])
+def list_sessions():
+    """历史会话列表（按最近活跃倒序）。"""
+    out = []
+    for sid, s in sessions.items():
+        hid = s.get("case_id")
+        mode = s.get("mode", "?")
+        out.append({
+            "session_id": sid,
+            "mode": mode,
+            "mode_label": {"training": "训练", "test": "测试", "consult": "咨询"}.get(mode, mode),
+            "title": s.get("title", "医学生"),
+            "case_id": hid,
+            "case_display": _get_display_code(hid) if hid else "",
+            "started_at": s.get("started_at", ""),
+            "last_active": s.get("last_active", 0.0),
+            "msg_count": len(s.get("history", [])),
+            "resumable": True,
+        })
+    out.sort(key=lambda x: x["last_active"], reverse=True)
+    return jsonify(out)
+
+@app.route("/api/sessions/<session_id>", methods=["DELETE"])
+def delete_session(session_id):
+    """删除一个历史会话（内存+磁盘）。"""
+    sessions.pop(session_id, None)
+    try:
+        os.remove(_session_file(session_id))
+    except OSError:
+        pass
+    return jsonify({"ok": True})
 
 @app.route("/api/chat/examination", methods=["POST"])
 def request_examination():
@@ -392,6 +606,8 @@ def request_examination():
 
     result_text = executor()
     sessions[session_id]["history"].append({"role": "system", "content": f"[{labels.get(tool_name, tool_name)}]\n{result_text}"})
+    sessions[session_id]["last_active"] = time.time()
+    _save_session(session_id)
 
     # Include photo URLs for oral exam (direct lookup, no HTTP call)
     photos = []

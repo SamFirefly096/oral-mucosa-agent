@@ -42,3 +42,6 @@ data/*.db.bak*
 # 实验备份文件
 *.bak
 *.bak.*
+
+# 文档工作流插件运行时文件（.docflow venv / 上传 / 生成物）
+.docflow/
