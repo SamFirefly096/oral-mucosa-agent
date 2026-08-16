@@ -84,6 +84,167 @@ def out(text, max_len=None):
 
 
 # ---------------------------------------------------------------------------
+# 图片支持：下载 / 解析 / 搜索 / 识别
+# ---------------------------------------------------------------------------
+def _http_get_json(url, timeout=20):
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; docflow/1.0)"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8", errors="replace"))
+
+
+def resolve_image(src):
+    """把图片 URL 或路径解析为本地可用的图片文件；网络图片会下载到 tmp。"""
+    src = str(src or "").strip()
+    if not src:
+        return None
+    if src.startswith(("http://", "https://")):
+        import urllib.request
+        import uuid
+        ext = ".img"
+        m = re.search(r"\.(png|jpe?g|gif|webp|svg)(?:\?|$)", src, re.I)
+        if m:
+            ext = "." + m.group(1).lower().replace("jpeg", "jpg")
+        dest = os.path.join(ROOT, "tmp", "img_" + uuid.uuid4().hex + ext)
+        try:
+            req = urllib.request.Request(src, headers={"User-Agent": "Mozilla/5.0 (compatible; docflow/1.0)"})
+            with urllib.request.urlopen(req, timeout=20) as r, open(dest, "wb") as f:
+                f.write(r.read())
+            return dest if os.path.exists(dest) else None
+        except Exception:
+            return None
+    if os.path.exists(src):
+        return src
+    candidates = [
+        os.path.join(os.path.dirname(ROOT), "uploads", src),
+        os.path.join(os.path.dirname(ROOT), "outputs", src),
+        os.path.join(ROOT, "tmp", src),
+        os.path.join(os.path.dirname(ROOT), src),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
+
+def image_search(query, max_results=5, image_type="all"):
+    """通过 Wikimedia Commons 搜索图片/矢量图（无需 API Key）。"""
+    import urllib.parse
+    query = (query or "").strip()
+    if not query:
+        return {"error": "缺少搜索词"}
+    n = min(max(int(max_results) if max_results else 5, 1), 20)
+    params = {
+        "action": "query",
+        "format": "json",
+        "generator": "search",
+        "gsrsearch": query,
+        "gsrnamespace": "6",
+        "gsrlimit": str(n * 2),
+        "prop": "imageinfo",
+        "iiprop": "url|size|mime|extmetadata",
+        "iiurlwidth": "800",
+    }
+    url = "https://commons.wikimedia.org/w/api.php?" + urllib.parse.urlencode(params)
+    try:
+        data = _http_get_json(url)
+    except Exception as e:
+        return {"error": "网络请求失败: %s" % e}
+    pages = ((data.get("query") or {}).get("pages") or {})
+    items = []
+    for p in pages.values():
+        title = p.get("title", "")
+        info = (p.get("imageinfo") or [{}])[0]
+        mime = info.get("mime", "")
+        if image_type == "photo" and "svg" in mime:
+            continue
+        if image_type == "vector" and "svg" not in mime:
+            continue
+        items.append({
+            "title": title,
+            "url": info.get("url", ""),
+            "thumb": info.get("thumburl", "") or info.get("url", ""),
+            "width": info.get("width", 0),
+            "height": info.get("height", 0),
+            "mime": mime,
+            "description": ((info.get("extmetadata") or {}).get("ImageDescription", {}) or {}).get("value", ""),
+        })
+        if len(items) >= n:
+            break
+    return {"items": items}
+
+
+def image_info(path):
+    from PIL import Image
+    im = Image.open(path)
+    info = {"format": im.format, "mode": im.mode, "width": im.width, "height": im.height}
+    try:
+        small = im.convert("RGB").resize((50, 50))
+        pixels = list(small.getdata())
+        n = max(len(pixels), 1)
+        avg = tuple(sum(c[i] for c in pixels) // n for i in range(3))
+        info["dominant_rgb"] = "#%02X%02X%02X" % avg
+    except Exception:
+        pass
+    return info
+
+
+def image_ocr(path):
+    try:
+        import pytesseract
+        from PIL import Image
+        return pytesseract.image_to_string(Image.open(path), lang="chi_sim+eng").strip()
+    except Exception:
+        return ""
+
+
+def image_recognize(path):
+    """识别图片：先返回基础信息，再做 OCR；如配置视觉 API 则尝试多模态描述。"""
+    if not os.path.exists(path):
+        return {"error": "图片不存在: %s" % path}
+    result = {"info": image_info(path), "ocr": image_ocr(path), "description": ""}
+    # 可选：OpenAI 兼容视觉接口
+    api_key = os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("DOCFLOW_VISION_API_KEY")
+    endpoint = os.environ.get("DOCFLOW_VISION_ENDPOINT") or os.environ.get("DEEPSEEK_BASE_URL")
+    if api_key and endpoint:
+        try:
+            import base64
+            import urllib.request
+            with open(path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("ascii")
+            mime = "image/png"
+            low = path.lower()
+            if low.endswith(".jpg") or low.endswith(".jpeg"):
+                mime = "image/jpeg"
+            elif low.endswith(".gif"):
+                mime = "image/gif"
+            elif low.endswith(".webp"):
+                mime = "image/webp"
+            payload = {
+                "model": os.environ.get("DOCFLOW_VISION_MODEL", "deepseek-chat"),
+                "messages": [
+                    {"role": "user", "content": [
+                        {"type": "text", "text": "请描述这张图片的内容，并给出可用于PPT配图的说明。"},
+                        {"type": "image_url", "image_url": {"url": "data:%s;base64,%s" % (mime, b64)}},
+                    ]}
+                ],
+                "max_tokens": 500,
+            }
+            req = urllib.request.Request(
+                endpoint.rstrip("/") + "/chat/completions",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json", "Authorization": "Bearer " + api_key},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            result["description"] = ((data.get("choices") or [{}])[0].get("message") or {}).get("content", "")
+        except Exception as e:
+            result["vision_error"] = str(e)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Markdown 解析 → sections
 # ---------------------------------------------------------------------------
 def parse_md(text):
@@ -113,6 +274,11 @@ def parse_md(text):
                 quote.append(lines[i].lstrip(">").strip())
                 i += 1
             sections.append({"type": "quote", "text": " ".join(quote)})
+            continue
+        m = re.match(r"^!\[([^\]]*)\]\(([^)]+)\)\s*$", line)
+        if m:
+            sections.append({"type": "image", "src": m.group(2).strip(), "alt": m.group(1).strip()})
+            i += 1
             continue
         if line.strip().startswith("```"):
             code = []
@@ -792,6 +958,47 @@ def extract_text_file(path):
     return {"format": ext_of(path), "text": text, "paragraphs": len([l for l in lines if l.strip()])}
 
 
+def extract_xlsx(path):
+    """提取 Excel：每个工作表输出为表格行（| 分隔），含 sheet 标题。"""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path, read_only=True, data_only=True)
+    parts = []
+    sheets = 0
+    rows = 0
+    for ws in wb.worksheets:
+        sheets += 1
+        parts.append("【工作表：%s】" % (ws.title or "Sheet%d" % sheets))
+        for row in ws.iter_rows(values_only=True):
+            vals = []
+            has = False
+            for c in row:
+                if c is None:
+                    vals.append("")
+                else:
+                    has = True
+                    s = str(c).strip()
+                    vals.append(s)
+            if has and any(vals):
+                rows += 1
+                parts.append(" | ".join(vals).rstrip(" |"))
+    wb.close()
+    return {"format": "xlsx", "text": "\n".join(parts), "sheets": sheets, "rows": rows}
+
+
+def extract_image(path):
+    try:
+        info = image_info(path)
+        ocr = image_ocr(path)
+        text = "图片信息：格式 %s，尺寸 %dx%d，主色 %s" % (
+            info.get("format", ""), info.get("width", 0), info.get("height", 0), info.get("dominant_rgb", ""))
+        if ocr:
+            text += "\nOCR识别：\n" + ocr
+        return {"format": ext_of(path) or "image", "text": text, "image": info}
+    except Exception as e:
+        return {"format": ext_of(path) or "image", "text": "", "error": str(e)}
+
+
 def extract_any(path):
     fmt = ext_of(path)
     if fmt == "docx":
@@ -800,15 +1007,21 @@ def extract_any(path):
         return extract_pptx(path)
     if fmt == "pdf":
         return extract_pdf(path)
+    if fmt == "xlsx":
+        return extract_xlsx(path)
     if fmt in ("txt", "md"):
         return extract_text_file(path)
+    if fmt in ("png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"):
+        return extract_image(path)
     return {"format": fmt, "text": ""}
 
 
 # ===========================================================================
 # PPTX
 # ===========================================================================
-def render_pptx(spec, out_path):
+def render_pptx_visual(spec, out_path):
+    """可视化大字版 PPT 渲染器：正文最小 24pt，卡片网格铺满页面，
+    大色块/编号圆点/图标字符生动呈现。风格借鉴「个人智能体部署指南」示例。"""
     from pptx import Presentation
     from pptx.util import Inches, Pt
     from pptx.dml.color import RGBColor
@@ -818,11 +1031,510 @@ def render_pptx(spec, out_path):
     from lxml import etree
 
     t = theme(spec.get("theme"))
+
+    def C(h):
+        return RGBColor.from_string(str(h).lstrip("#"))
+
+    accent = C(t["accent"])
+    accent_dark = C(t["accent_dark"])
+    light = C(t["light"])
+    soft = C(t["soft"])
+    WHITE = RGBColor(0xFF, 0xFF, 0xFF)
+    DARK_GRAY = RGBColor(0x33, 0x33, 0x33)
+    MED_GRAY = RGBColor(0x66, 0x66, 0x66)
+    LINE_GRAY = RGBColor(0xCC, 0xCC, 0xCC)
+    BG_GRAY = RGBColor(0xF2, 0xF2, 0xF2)
+
+    def hx(c):
+        return "%02X%02X%02X" % (c[0], c[1], c[2])
+
     prs = Presentation()
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
     blank = prs.slide_layouts[6]
     W, H = 13.333, 7.5
+    LM = 0.8
+    CW = 11.733
+    slides = []
+
+    def style_run(r, size=24, bold=False, color="333333", font="微软雅黑", italic=False):
+        r.font.size = Pt(size)
+        r.font.bold = bold
+        r.font.italic = italic
+        r.font.color.rgb = RGBColor.from_string(str(color).lstrip("#"))
+        r.font.name = font
+        rPr = r._r.get_or_add_rPr()
+        ea = rPr.find(qn("a:ea"))
+        if ea is None:
+            ea = etree.SubElement(rPr, qn("a:ea"))
+        ea.set("typeface", font)
+
+    def clean(shape):
+        sp = shape._element
+        st = sp.find(qn("p:style"))
+        if st is not None:
+            sp.remove(st)
+
+    def add_rect(slide, l, tp, w, h, color, radius=None):
+        shape_type = MSO_SHAPE.ROUNDED_RECTANGLE if radius else MSO_SHAPE.RECTANGLE
+        sp = slide.shapes.add_shape(shape_type, Inches(l), Inches(tp), Inches(w), Inches(h))
+        if radius:
+            try:
+                sp.adjustments[0] = radius
+            except Exception:
+                pass
+        sp.fill.solid()
+        sp.fill.fore_color.rgb = color
+        sp.line.fill.background()
+        sp.shadow.inherit = False
+        clean(sp)
+        return sp
+
+    def add_hline(slide, x, y, length, color, thickness=0.5):
+        h = max(thickness * 12700, 6350)
+        return add_rect(slide, x, y, length, h / 914400.0, color)
+
+    def add_oval(slide, l, tp, size, letter, bg, fg=WHITE, font_size=24):
+        c = slide.shapes.add_shape(MSO_SHAPE.OVAL, Inches(l), Inches(tp), Inches(size), Inches(size))
+        c.fill.solid()
+        c.fill.fore_color.rgb = bg
+        c.line.fill.background()
+        c.shadow.inherit = False
+        clean(c)
+        tf = c.text_frame
+        tf.paragraphs[0].text = letter
+        tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+        bodyPr = tf._txBody.find(qn("a:bodyPr"))
+        bodyPr.set("anchor", "ctr")
+        for a in ["lIns", "tIns", "rIns", "bIns"]:
+            bodyPr.set(a, "0")
+        for r in tf.paragraphs[0].runs:
+            r.font.size = Pt(font_size)
+            r.font.bold = True
+            r.font.color.rgb = fg
+            r.font.name = "微软雅黑"
+        return c
+
+    def add_box(slide, l, tp, w, h):
+        tb = slide.shapes.add_textbox(Inches(l), Inches(tp), Inches(w), Inches(h))
+        tf = tb.text_frame
+        tf.word_wrap = True
+        return tf
+
+    def add_text(slide, l, tp, w, h, text, size=24, bold=False, color=DARK_GRAY,
+                 font="微软雅黑", align=PP_ALIGN.LEFT, anchor="t"):
+        tb = slide.shapes.add_textbox(Inches(l), Inches(tp), Inches(w), Inches(h))
+        tf = tb.text_frame
+        tf.word_wrap = True
+        bodyPr = tf._txBody.find(qn("a:bodyPr"))
+        bodyPr.set("anchor", anchor)
+        for a in ["lIns", "tIns", "rIns", "bIns"]:
+            bodyPr.set(a, "45720")
+        lines = text if isinstance(text, list) else [text]
+        for i, line in enumerate(lines):
+            p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+            p.alignment = align
+            if i > 0:
+                p.space_before = Pt(4)
+            r = p.add_run()
+            r.text = line
+            style_run(r, size, bold, hx(color), font)
+        return tb
+
+    def add_slide():
+        s = prs.slides.add_slide(blank)
+        slides.append(s)
+        # 每页右上角加一个小图标，保证“每页一图”
+        icon_path = os.path.join(os.path.dirname(ROOT), 'assets', 'dsh_icon.png')
+        local_icon = resolve_image(icon_path)
+        if local_icon:
+            try:
+                from PIL import Image
+                im = Image.open(local_icon)
+                iw, ih = im.size
+                if iw and ih:
+                    icon_h = 0.55
+                    icon_w = icon_h * iw / ih
+                    s.shapes.add_picture(local_icon, Inches(W - icon_w - 0.25), Inches(0.18),
+                                         width=Inches(icon_w), height=Inches(icon_h))
+            except Exception:
+                pass
+        return s
+
+    def est_lines(text, width_in, size=24):
+        """估算 24pt 中文在给定宽度（英寸）下的行数（每中文字约 size/72 英寸宽）。"""
+        cw = size / 72.0
+        per = max(int(width_in / cw), 4)
+        n = 0
+        for seg in str(text).split("\n"):
+            n += max(int((len(seg) + per - 1) / per), 1)
+        return n
+
+    # ---------------- 封面：左侧大色块 + 右侧大标题 ----------------
+    s = add_slide()
+    add_rect(s, 0, 0, 5.0, H, accent)
+    add_rect(s, 5.0, 0, 0.14, H, accent_dark)
+    add_oval(s, 3.6, 5.6, 2.6, "", light, fg=light)   # 装饰圆
+    add_oval(s, 4.2, 6.3, 1.1, "", WHITE, fg=WHITE)   # 装饰圆
+    brand = (spec.get("author") or "").split("·")[0].strip()
+    if brand:
+        add_text(s, 0.55, 0.5, 3.9, 0.5, brand, size=24, bold=True, color=WHITE)
+    title = spec_title(spec) or "文档标题"
+    lines = title.split("\n") if isinstance(title, str) else [title]
+    ty = 2.0
+    for ln in lines:
+        add_text(s, 0.55, ty, 4.2, 0.95, ln, size=40, bold=True, color=WHITE)
+        ty += 0.95
+    if spec.get("subtitle"):
+        add_text(s, 5.6, 2.1, 7.3, 1.1, spec["subtitle"], size=28, bold=True, color=accent_dark)
+    add_hline(s, 5.6, 3.35, 2.2, accent, 2.5)
+    body_brief = (spec.get("content") or "")[:120]
+    add_text(s, 5.6, 3.7, 7.0, 1.2, "面向新手 · 可视化讲解 · 动手即会", size=24, color=MED_GRAY)
+    meta = []
+    if spec.get("author"):
+        meta.append(spec["author"])
+    if spec.get("date"):
+        meta.append(spec["date"])
+    if meta:
+        add_text(s, 5.6, 6.35, 7.0, 0.6, "　".join(meta), size=24, color=MED_GRAY)
+
+    # ---------------- 内容结构 ----------------
+    cur = None
+    cur_title = ""
+    body_tf = None
+    est_h = 0.0
+    BODY_TOP = 1.95
+    BODY_MAX = 4.55
+    h2_num = 0
+    part_num = 0
+
+    def open_slide(title_text, is_divider=False):
+        nonlocal cur, cur_title, body_tf, est_h, part_num
+        cur = add_slide()
+        cur_title = title_text
+        est_h = 0.0
+        if is_divider:
+            part_num += 1
+            add_rect(cur, 0, 0, 0.55, H, accent)
+            add_oval(cur, 0.9, 1.5, 1.7, "", light, fg=light)
+            add_text(cur, 1.05, 1.75, 3.0, 1.2, "PART %02d" % part_num, size=44, bold=True, color=accent)
+            add_text(cur, 1.05, 3.1, 11.2, 1.6, title_text, size=44, bold=True, color=accent_dark)
+            add_hline(cur, 1.1, 5.0, 3.5, accent, 2.5)
+            body_tf = None
+        else:
+            add_text(cur, LM, 0.5, 11.7, 0.9, title_text, size=32, bold=True, color=accent_dark, anchor="b")
+            add_hline(cur, LM, 1.52, 1.9, accent, 3.0)
+            add_hline(cur, LM, 1.52, 11.7, LINE_GRAY, 0.5)
+            body_tf = add_box(cur, LM, BODY_TOP, CW, BODY_MAX)
+        return cur
+
+    def ensure_body():
+        nonlocal cur
+        if body_tf is None:
+            open_slide(cur_title)
+
+    cont_n = {}
+
+    def ensure_space(need):
+        nonlocal est_h
+        if est_h + need > BODY_MAX:
+            n = cont_n.get(cur_title, 0) + 1
+            cont_n[cur_title] = n
+            open_slide(cur_title + ("（续%d）" % n if n > 1 else "（续）"))
+
+    def para(text="", size=24, bold=False, color="333333", before=0, after=8):
+        nonlocal est_h
+        ensure_body()
+        n_lines = est_lines(text, CW, size)
+        need = n_lines * 0.44 + 0.16 + after / 30.0
+        ensure_space(need)
+        p = body_tf.paragraphs[0] if not body_tf.paragraphs[0].runs and est_h == 0 else body_tf.add_paragraph()
+        p.space_before = Pt(before)
+        p.space_after = Pt(after)
+        r = p.add_run()
+        r.text = text
+        style_run(r, size, bold, color)
+        est_h += need
+
+    def add_h2_row(text):
+        nonlocal est_h, h2_num
+        ensure_body()
+        ensure_space(0.75)
+        h2_num += 1
+        y = BODY_TOP + est_h
+        add_oval(cur, LM, y - 0.05, 0.6, str(h2_num), accent, font_size=26)
+        tf = add_box(cur, LM + 0.85, y - 0.1, CW - 0.85, 0.62)
+        p = tf.paragraphs[0]
+        r = p.add_run()
+        r.text = text
+        style_run(r, 28, True, hx(accent_dark))
+        est_h += 0.75
+
+    def add_bullet_cards(items):
+        """要点卡片网格：2 列圆角卡片，24pt 文字，铺满内容区。"""
+        nonlocal est_h
+        ensure_body()
+        n = len(items)
+        idx = 0
+        while idx < n:
+            # 每页最多 4 张卡（2x2）铺满；不足 2 张用单列
+            batch = items[idx:idx + 4]
+            n_batch = len(batch)
+            cols = 2 if n_batch >= 2 else 1
+            gap = 0.35
+            cw = (CW - gap * (cols - 1)) / cols
+            heights = []
+            for it in batch:
+                nl = est_lines(it, cw - 0.7, 24)
+                hh = min(max(nl * 0.44 + 0.75, 1.35), 2.6)
+                heights.append(hh)
+            rows = (n_batch + cols - 1) // cols
+            row_h = [max(heights[i * cols:(i + 1) * cols]) for i in range(rows)]
+            total = sum(row_h) + gap * (rows - 1)
+            ensure_space(total + 0.1)
+            y = BODY_TOP + est_h
+            for i, it in enumerate(batch):
+                r_ = i // cols
+                c_ = i % cols
+                x = LM + c_ * (cw + gap)
+                hh = row_h[r_]
+                add_rect(cur, x, y, cw, hh, light, radius=0.12)
+                add_rect(cur, x, y, 0.12, hh, accent)
+                add_text(cur, x + 0.35, y + 0.14, cw - 0.7, 0.55, "▪", size=30, bold=True, color=accent)
+                tf = add_box(cur, x + 0.35, y + 0.68, cw - 0.7, hh - 0.8)
+                p = tf.paragraphs[0]
+                r_2 = p.add_run()
+                r_2.text = it
+                style_run(r_2, 24, False, hx(DARK_GRAY))
+            est_h += total + gap + 0.1
+            idx += n_batch
+
+    def add_numbered(items):
+        nonlocal est_h
+        ensure_body()
+        for i, it in enumerate(items):
+            num = i + 1
+            nl = est_lines(it, CW - 1.2, 24)
+            need = max(nl * 0.44 + 0.1, 0.72)
+            ensure_space(need)
+            y = BODY_TOP + est_h
+            add_oval(cur, LM, y, 0.55, str(num), accent, font_size=24)
+            tf = add_box(cur, LM + 0.85, y - 0.05, CW - 0.85, need)
+            p = tf.paragraphs[0]
+            r = p.add_run()
+            r.text = it
+            style_run(r, 24, False, hx(DARK_GRAY))
+            est_h += need + 0.18
+
+    def add_quote(text):
+        nonlocal est_h
+        ensure_body()
+        nl = est_lines(text, CW - 1.4, 26)
+        hh = max(nl * 0.5 + 0.6, 1.1)
+        ensure_space(hh + 0.1)
+        y = BODY_TOP + est_h
+        add_rect(cur, LM, y, CW, hh, accent, radius=0.1)
+        add_rect(cur, LM, y, 0.14, hh, accent_dark)
+        tf = add_box(cur, LM + 0.6, y + 0.25, CW - 1.2, hh - 0.45)
+        p = tf.paragraphs[0]
+        r = p.add_run()
+        r.text = text
+        style_run(r, 26, True, hx(WHITE))
+        est_h += hh + 0.1
+
+    def add_code(text):
+        nonlocal est_h
+        ensure_body()
+        code_lines = (text or "").split("\n")
+        n_lines = len(code_lines)
+        hh = min(n_lines * 0.5 + 0.4, 3.6)
+        ensure_space(hh + 0.1)
+        y = BODY_TOP + est_h
+        add_rect(cur, LM, y, CW, hh, accent_dark, radius=0.08)
+        tf = add_box(cur, LM + 0.4, y + 0.2, CW - 0.8, hh - 0.4)
+        first = True
+        for ln in code_lines[:8]:
+            p = tf.paragraphs[0] if first else tf.add_paragraph()
+            first = False
+            p.space_after = Pt(4)
+            r = p.add_run()
+            r.text = ln if ln else " "
+            style_run(r, 24, False, hx(WHITE), "Consolas")
+        est_h += hh + 0.1
+
+    def add_table_slide(title_text, headers, rows):
+        """表格直接渲染在当前正文区（不再单独开页），避免标题页空白。"""
+        nonlocal est_h
+        from pptx.util import Inches as _In
+        ensure_body()
+        ncols = max(len(headers), max((len(rw) for rw in rows), default=0), 1)
+        nrows = len(rows)
+        vis_rows = min(nrows, 5)
+        tbl_h = 0.75 + 0.72 * vis_rows
+        ensure_space(tbl_h + 0.15)
+        y = BODY_TOP + est_h
+        tbl = cur.shapes.add_table(1 + vis_rows, ncols, _In(LM), _In(y), _In(CW), _In(tbl_h)).table
+        colw = int(914400 * CW / ncols)
+        for j in range(ncols):
+            tbl.columns[j].width = colw
+        for j in range(ncols):
+            cell = tbl.cell(0, j)
+            cell.text = headers[j] if j < len(headers) else ""
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = accent
+            for pp in cell.text_frame.paragraphs:
+                pp.alignment = PP_ALIGN.CENTER
+                for rr in pp.runs:
+                    style_run(rr, 24, True, hx(WHITE))
+        for i, rw in enumerate(rows[:vis_rows]):
+            for j in range(ncols):
+                cell = tbl.cell(i + 1, j)
+                cell.text = str(rw[j]) if j < len(rw) else ""
+                if i % 2 == 1:
+                    cell.fill.solid()
+                    cell.fill.fore_color.rgb = soft
+                for pp in cell.text_frame.paragraphs:
+                    pp.alignment = PP_ALIGN.CENTER
+                    for rr in pp.runs:
+                        style_run(rr, 24, False, hx(DARK_GRAY))
+        if nrows > vis_rows:
+            add_text(cur, LM, y + tbl_h + 0.12, CW, 0.5,
+                     "… 共 %d 行数据" % nrows, size=24, color=MED_GRAY, align=PP_ALIGN.CENTER)
+        est_h += tbl_h + 0.15
+
+    def add_image(src, alt=""):
+        nonlocal est_h
+        ensure_body()
+        local = resolve_image(src)
+        if not local:
+            para("图片不可用: " + str(src), size=24)
+            return
+        try:
+            from PIL import Image
+            im = Image.open(local)
+            iw, ih = im.size
+            max_w, max_h = 8.0, 3.6
+            ratio = min(max_w / iw, max_h / ih) if iw and ih else 1
+            w = max(1.0, iw * ratio)
+            h = max(1.0, ih * ratio)
+            need = h + 0.2
+            ensure_space(need)
+            y = BODY_TOP + est_h
+            x = LM + (CW - w) / 2
+            cur.shapes.add_picture(local, Inches(x), Inches(y), width=Inches(w), height=Inches(h))
+            if alt:
+                add_text(cur, LM, y + h + 0.05, CW, 0.4, alt, size=20, color=MED_GRAY, align=PP_ALIGN.CENTER)
+                need += 0.5
+            est_h += need
+        except Exception as e:
+            para("图片加载失败: %s" % e, size=24)
+
+    sections = content_sections(spec)
+    for s in sections:
+        typ = s.get("type")
+        if typ == "h1":
+            open_slide(s.get("text", ""), is_divider=True)
+        elif typ == "h2":
+            if body_tf is None:
+                open_slide(s.get("text", ""))
+            elif est_h > 1.6:
+                open_slide(s.get("text", ""))
+            else:
+                add_h2_row(s.get("text", ""))
+        elif typ == "h3":
+            add_h2_row(s.get("text", ""))
+        elif typ == "p":
+            para(s.get("text", ""), size=24)
+        elif typ == "bullets":
+            add_bullet_cards(s.get("items", []))
+        elif typ == "numbered":
+            add_numbered(s.get("items", []))
+        elif typ == "quote":
+            add_quote(s.get("text", ""))
+        elif typ == "code":
+            add_code(s.get("text", ""))
+        elif typ == "table":
+            add_table_slide(cur_title or "数据表", s.get("headers") or [], s.get("rows") or [])
+        elif typ == "image":
+            add_image(s.get("src", ""), s.get("alt", ""))
+        elif typ == "divider":
+            pass
+
+    # ---------------- 页脚：页码 + 底部细条 ----------------
+    total = len(slides) - 1
+    for i, sl in enumerate(slides):
+        if i == 0:
+            continue
+        add_hline(sl, 0, H - 0.08, W, accent, 2.5)
+        add_text(sl, 12.0, 7.05, 1.1, 0.4, "%d/%d" % (i, total), size=16, color=MED_GRAY, align=PP_ALIGN.RIGHT)
+
+    prs.save(out_path)
+    _pptx_full_cleanup(out_path)
+
+
+def _pptx_full_cleanup(outpath):
+    """PPTX 后处理：移除所有 p:style 与主题阴影/3D，防止主题效果污染。
+    模式借鉴 Mck-ppt-design-skill（Apache-2.0, github.com/likaku/Mck-ppt-design-skill）。"""
+    from pptx.oxml.ns import qn as _qn
+    from lxml import etree as _etree
+    import zipfile, os
+    tmppath = outpath + ".tmp"
+    with zipfile.ZipFile(outpath, "r") as zin:
+        with zipfile.ZipFile(tmppath, "w", zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                data = zin.read(item.filename)
+                if item.filename.endswith(".xml"):
+                    root = _etree.fromstring(data)
+                    ns_p = "http://schemas.openxmlformats.org/presentationml/2006/main"
+                    ns_a = "http://schemas.openxmlformats.org/drawingml/2006/main"
+                    for style in root.findall(".//{%s}style" % ns_p):
+                        style.getparent().remove(style)
+                    if "theme" in item.filename.lower():
+                        for tag in ["outerShdw", "innerShdw", "scene3d", "sp3d"]:
+                            for el in root.findall(".//{%s}%s" % (ns_a, tag)):
+                                el.getparent().remove(el)
+                    data = _etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+                zout.writestr(item, data)
+    os.replace(tmppath, outpath)
+
+
+def render_pptx(spec, out_path):
+    """McKinsey 风格 PPT 渲染器（设计模式借鉴 Mck-ppt-design-skill，Apache-2.0，
+    https://github.com/likaku/Mck-ppt-design-skill）：封面大标题 + 章节分隔页 +
+    动作标题内容页 + 编号圆点小节 + 引用/代码/表格规范排版 + 页脚页码。"""
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+    from pptx.dml.color import RGBColor
+    from pptx.enum.text import PP_ALIGN
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.oxml.ns import qn
+    from lxml import etree
+
+    t = theme(spec.get("theme"))
+
+    def C(h):
+        return RGBColor.from_string(str(h).lstrip("#"))
+
+    accent = C(t["accent"])
+    accent_dark = C(t["accent_dark"])
+    light = C(t["light"])
+    WHITE = RGBColor(0xFF, 0xFF, 0xFF)
+    DARK_GRAY = RGBColor(0x33, 0x33, 0x33)
+    MED_GRAY = RGBColor(0x66, 0x66, 0x66)
+    LINE_GRAY = RGBColor(0xCC, 0xCC, 0xCC)
+    BG_GRAY = RGBColor(0xF2, 0xF2, 0xF2)
+
+    def hx(c):
+        return "%02X%02X%02X" % (c[0], c[1], c[2])
+
+    prs = Presentation()
+    prs.slide_width = Inches(13.333)
+    prs.slide_height = Inches(7.5)
+    blank = prs.slide_layouts[6]
+    W, H = 13.333, 7.5
+    LM = 0.8          # 原始英寸值，各绘图助手内部再 Inches() 换算
+    CW = 11.733
+    slides = []  # 所有页引用，结尾统一加页码
 
     def style_run(r, size=18, bold=False, color="333333", font="微软雅黑", italic=False):
         r.font.size = Pt(size)
@@ -836,13 +1548,65 @@ def render_pptx(spec, out_path):
             ea = etree.SubElement(rPr, qn("a:ea"))
         ea.set("typeface", font)
 
+    def clean(shape):
+        sp = shape._element
+        st = sp.find(qn("p:style"))
+        if st is not None:
+            sp.remove(st)
+
     def add_rect(slide, l, tp, w, h, color):
         sp = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(l), Inches(tp), Inches(w), Inches(h))
         sp.fill.solid()
-        sp.fill.fore_color.rgb = RGBColor.from_string(str(color).lstrip("#"))
+        sp.fill.fore_color.rgb = color
         sp.line.fill.background()
         sp.shadow.inherit = False
+        clean(sp)
         return sp
+
+    def add_hline(slide, x, y, length, color, thickness=0.5):
+        h = max(thickness * 12700, 6350)
+        return add_rect(slide, x, y, length, h / 914400.0, color)
+
+    def add_oval(slide, l, tp, size, letter, bg, fg=WHITE, font_size=15):
+        c = slide.shapes.add_shape(MSO_SHAPE.OVAL, Inches(l), Inches(tp), Inches(size), Inches(size))
+        c.fill.solid()
+        c.fill.fore_color.rgb = bg
+        c.line.fill.background()
+        c.shadow.inherit = False
+        clean(c)
+        tf = c.text_frame
+        tf.paragraphs[0].text = letter
+        tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+        bodyPr = tf._txBody.find(qn("a:bodyPr"))
+        bodyPr.set("anchor", "ctr")
+        for a in ["lIns", "tIns", "rIns", "bIns"]:
+            bodyPr.set(a, "0")
+        for r in tf.paragraphs[0].runs:
+            r.font.size = Pt(font_size)
+            r.font.bold = True
+            r.font.color.rgb = fg
+            r.font.name = "微软雅黑"
+        return c
+
+    def add_text(slide, l, tp, w, h, text, size=14, bold=False, color=DARK_GRAY,
+                 font="微软雅黑", align=PP_ALIGN.LEFT, anchor="t"):
+        tb = slide.shapes.add_textbox(Inches(l), Inches(tp), Inches(w), Inches(h))
+        tf = tb.text_frame
+        tf.word_wrap = True
+        bodyPr = tf._txBody.find(qn("a:bodyPr"))
+        bodyPr.set("anchor", anchor)
+        for a in ["lIns", "tIns", "rIns", "bIns"]:
+            bodyPr.set(a, "45720")
+        lines = text if isinstance(text, list) else [text]
+        for i, line in enumerate(lines):
+            p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+            p.alignment = align
+            if i > 0:
+                p.space_before = Pt(4)
+            r = p.add_run()
+            r.text = line
+            style_run(r, size, bold, hx(color), font)
+        return tb
 
     def add_box(slide, l, tp, w, h):
         tb = slide.shapes.add_textbox(Inches(l), Inches(tp), Inches(w), Inches(h))
@@ -851,151 +1615,243 @@ def render_pptx(spec, out_path):
         return tf
 
     def add_slide():
-        return prs.slides.add_slide(blank)
+        s = prs.slides.add_slide(blank)
+        slides.append(s)
+        return s
 
-    # ---- 封面页 ----
+    def add_page_number(slide, num, total):
+        add_text(slide, 12.15, 7.08, 1.0, 0.3, "%d/%d" % (num, total),
+                 size=9, color=MED_GRAY, align=PP_ALIGN.RIGHT)
+
+    # ---- 封面页（大标题左对齐 + 顶部细线 + 底部粗线，McKinsey 风格） ----
     s = add_slide()
-    add_rect(s, 0, 0, W, 0.22, t["accent"])
-    add_rect(s, 0, H - 0.22, W, 0.22, t["accent"])
+    add_rect(s, 0, 0, W, 0.06, accent)
     title = spec_title(spec) or "文档标题"
-    tf = add_box(s, 0.9, 2.15, 11.53, 1.7)
-    p = tf.paragraphs[0]
-    p.alignment = PP_ALIGN.CENTER
-    r = p.add_run()
-    r.text = title
-    style_run(r, 44, True, t["accent_dark"])
-    add_rect(s, 5.17, 3.98, 3.0, 0.07, t["accent"])
+    add_text(s, 1.0, 1.85, 11.3, 1.4, title, size=40, bold=True, color=accent_dark)
+    yy = 3.0
     if spec.get("subtitle"):
-        tf = add_box(s, 0.9, 4.25, 11.53, 0.7)
-        p = tf.paragraphs[0]
-        p.alignment = PP_ALIGN.CENTER
-        r = p.add_run()
-        r.text = spec["subtitle"]
-        style_run(r, 20, False, "666666")
+        add_text(s, 1.0, yy, 11.3, 0.6, spec["subtitle"], size=20, color=DARK_GRAY)
+        yy += 0.85
+    add_hline(s, 1.0, 6.62, 4.6, accent, 2.0)
     meta = []
     if spec.get("author"):
         meta.append(spec["author"])
     if spec.get("date"):
         meta.append(spec["date"])
     if meta:
-        tf = add_box(s, 0.9, 6.35, 11.53, 0.5)
-        p = tf.paragraphs[0]
-        p.alignment = PP_ALIGN.CENTER
-        r = p.add_run()
-        r.text = "　".join(meta)
-        style_run(r, 14, False, "999999")
+        add_text(s, 1.0, 6.82, 11.3, 0.4, "　".join(meta), size=12, color=MED_GRAY)
 
-    # ---- 内容页 ----
+    # ---- 内容结构 ----
     cur = None
     cur_title = ""
     body_tf = None
     est_h = 0.0
-    BODY_TOP = 1.75
-    BODY_MAX = 5.15
+    BODY_TOP = 1.55
+    BODY_MAX = 5.35
+    h2_num = 0
+    part_num = 0
 
-    def open_slide(title_text):
-        nonlocal cur, cur_title, body_tf, est_h
+    def open_slide(title_text, is_divider=False):
+        nonlocal cur, cur_title, body_tf, est_h, part_num
         cur = add_slide()
         cur_title = title_text
-        add_rect(cur, 0, 0, W, 0.16, t["accent"])
-        tf = add_box(cur, 0.7, 0.42, 11.9, 0.85)
-        p = tf.paragraphs[0]
-        r = p.add_run()
-        r.text = title_text
-        style_run(r, 27, True, t["accent_dark"])
-        add_rect(cur, 0.75, 1.32, 1.6, 0.06, t["accent"])
-        body_tf = add_box(cur, 0.75, BODY_TOP, 11.85, BODY_MAX)
         est_h = 0.0
+        if is_divider:
+            # 章节分隔页：左侧主题色竖条 + PART 标签 + 大标题
+            part_num += 1
+            add_rect(cur, 0, 0, 0.6, H, accent)
+            add_text(cur, 1.25, 2.05, 10.0, 0.5, "PART %02d" % part_num, size=16, color=MED_GRAY)
+            add_text(cur, 1.25, 2.65, 10.8, 1.2, title_text, size=28, bold=True, color=accent_dark)
+            body_tf = None
+        else:
+            # 内容页：动作标题（底对齐）+ 细分隔线
+            add_text(cur, LM, 0.32, 11.7, 0.6, title_text, size=22, bold=True, color=accent_dark, anchor="b")
+            add_hline(cur, LM, 1.06, CW, LINE_GRAY, 0.75)
+            body_tf = add_box(cur, LM, BODY_TOP, CW, BODY_MAX)
+        return cur
+
+    def ensure_body():
+        nonlocal cur
+        if body_tf is None:
+            open_slide(cur_title)
 
     def ensure_space(need):
         nonlocal est_h
         if est_h + need > BODY_MAX:
             open_slide(cur_title + "（续）")
 
-    def para(text="", size=18, bold=False, color="333333", before=0, after=6, bullet=None,
-             num=None, italic=False, font="微软雅黑", level=0):
+    def para(text="", size=16, bold=False, color="333333", before=0, after=6, bullet=None,
+             num=None, italic=False, font="微软雅黑"):
         nonlocal est_h
-        ensure_space(0.34 + after / 20.0)
+        ensure_body()
+        ensure_space(0.36 + after / 22.0)
         p = body_tf.paragraphs[0] if not body_tf.paragraphs[0].runs and est_h == 0 else body_tf.add_paragraph()
         p.space_before = Pt(before)
         p.space_after = Pt(after)
-        if level:
-            p.level = min(level, 8)
         if bullet:
             rb = p.add_run()
             rb.text = "▪  "
-            style_run(rb, size, True, t["accent"])
+            style_run(rb, size, True, hx(accent))
         if num is not None:
             rn = p.add_run()
             rn.text = "%d. " % num
-            style_run(rn, size, True, t["accent"])
+            style_run(rn, size, True, hx(accent))
         if text:
             rt = p.add_run()
             rt.text = text
             style_run(rt, size, bold, color, font, italic)
-        est_h += 0.34 + after / 20.0
+        est_h += 0.36 + after / 22.0
 
-    def add_table_slide(title_text, headers, rows):
-        nonlocal est_h
-        from pptx.util import Inches as _In
-        s2 = add_slide()
-        add_rect(s2, 0, 0, W, 0.16, t["accent"])
-        tf = add_box(s2, 0.7, 0.42, 11.9, 0.85)
+    def add_h2_row(text):
+        nonlocal est_h, h2_num
+        ensure_body()
+        ensure_space(0.72)
+        h2_num += 1
+        y = BODY_TOP + est_h
+        add_oval(cur, LM, y - 0.03, 0.42, str(h2_num), accent)
+        tf = add_box(cur, LM + 0.62, y - 0.07, CW - 0.62, 0.52)
         p = tf.paragraphs[0]
         r = p.add_run()
-        r.text = title_text
-        style_run(r, 27, True, t["accent_dark"])
-        add_rect(s2, 0.75, 1.32, 1.6, 0.06, t["accent"])
+        r.text = text
+        style_run(r, 18, True, hx(accent_dark))
+        est_h += 0.72
+
+    def add_h3(text):
+        nonlocal est_h
+        ensure_body()
+        ensure_space(0.5)
+        y = BODY_TOP + est_h
+        add_rect(cur, LM, y + 0.06, 0.07, 0.26, accent)
+        tf = add_box(cur, LM + 0.24, y - 0.04, CW - 0.24, 0.44)
+        p = tf.paragraphs[0]
+        r = p.add_run()
+        r.text = text
+        style_run(r, 16, True, "444444")
+        est_h += 0.5
+
+    def add_quote(text):
+        nonlocal est_h
+        ensure_body()
+        ensure_space(1.1)
+        y = BODY_TOP + est_h
+        add_rect(cur, LM, y, CW, 0.9, light)
+        add_rect(cur, LM, y, 0.07, 0.9, accent)
+        tf = add_box(cur, LM + 0.3, y + 0.1, CW - 0.6, 0.7)
+        p = tf.paragraphs[0]
+        r = p.add_run()
+        r.text = text
+        style_run(r, 15, False, "555555", italic=True)
+        est_h += 1.1
+
+    def add_code(text):
+        nonlocal est_h
+        ensure_body()
+        lines = (text or "").split("\n")
+        h = min(0.28 * len(lines) + 0.2, 3.2)
+        ensure_space(h + 0.1)
+        y = BODY_TOP + est_h
+        add_rect(cur, LM, y, CW, h, BG_GRAY)
+        tf = add_box(cur, LM + 0.25, y + 0.12, CW - 0.5, h - 0.2)
+        first = True
+        for ln in lines[:16]:
+            p = tf.paragraphs[0] if first else tf.add_paragraph()
+            first = False
+            p.space_after = Pt(2)
+            r = p.add_run()
+            r.text = ln if ln else " "
+            style_run(r, 12, False, "444444", "Consolas")
+        est_h += h + 0.1
+
+    def add_table_slide(title_text, headers, rows):
+        s2 = add_slide()
+        add_text(s2, LM, 0.32, 11.7, 0.6, title_text, size=22, bold=True, color=accent_dark, anchor="b")
+        add_hline(s2, LM, 1.06, CW, LINE_GRAY, 0.75)
         ncols = max(len(headers), max((len(rw) for rw in rows), default=0), 1)
-        nrows = 1 + len(rows)
-        tbl = s2.shapes.add_table(nrows, ncols, _In(0.75), _In(1.75), _In(11.85), _In(4.9)).table
+        nrows = len(rows)
+        colw = CW / ncols
+        hdr_y = 1.4
         for j in range(ncols):
-            cell = tbl.cell(0, j)
-            cell.text = headers[j] if j < len(headers) else ""
-            cell.fill.solid()
-            cell.fill.fore_color.rgb = RGBColor.from_string(t["accent"].lstrip("#"))
-            for pp in cell.text_frame.paragraphs:
-                for rr in pp.runs:
-                    style_run(rr, 14, True, "FFFFFF")
+            add_text(s2, LM + colw * j, hdr_y, colw, 0.42, headers[j] if j < len(headers) else "",
+                     size=14, bold=True, color=accent_dark)
+        add_hline(s2, LM, hdr_y + 0.46, CW, accent, 1.25)
+        row_start = hdr_y + 0.6
+        avail = 7.0 - row_start
+        row_h = min(0.62, avail / nrows) if nrows else 0.62
+        row_font = 13 if row_h >= 0.5 else 11
         for i, rw in enumerate(rows):
+            ry = row_start + row_h * i
             for j in range(ncols):
-                cell = tbl.cell(i + 1, j)
-                cell.text = str(rw[j]) if j < len(rw) else ""
-                if i % 2 == 1:
-                    cell.fill.solid()
-                    cell.fill.fore_color.rgb = RGBColor.from_string(t["soft"].lstrip("#"))
-                for pp in cell.text_frame.paragraphs:
-                    for rr in pp.runs:
-                        style_run(rr, 13, False, "333333")
+                add_text(s2, LM + colw * j + 0.06, ry + 0.02, colw - 0.12, row_h - 0.04,
+                         str(rw[j]) if j < len(rw) else "", size=row_font,
+                         color=DARK_GRAY, anchor="ctr")
+            add_hline(s2, LM, ry + row_h, CW, LINE_GRAY, 0.25)
+
+    def add_image_slide(title_text, src, alt=""):
+        s2 = add_slide()
+        add_text(s2, LM, 0.32, 11.7, 0.6, title_text, size=22, bold=True, color=accent_dark, anchor="b")
+        add_hline(s2, LM, 1.06, CW, LINE_GRAY, 0.75)
+        local = resolve_image(src)
+        if local:
+            try:
+                from PIL import Image
+                im = Image.open(local)
+                iw, ih = im.size
+                max_w, max_h = 10.5, 5.2
+                ratio = min(max_w / iw, max_h / ih) if iw and ih else 1
+                w = max(1.0, iw * ratio)
+                h = max(1.0, ih * ratio)
+                left = LM + (CW - w) / 2
+                top = 1.4 + (5.4 - h) / 2
+                s2.shapes.add_picture(local, Inches(left), Inches(top), width=Inches(w), height=Inches(h))
+            except Exception as e:
+                add_text(s2, LM, 3.0, CW, 0.8, "图片加载失败: %s" % e, size=14, color="C0392B")
+        else:
+            add_text(s2, LM, 3.0, CW, 0.8, "图片不可用: " + str(src), size=14, color="C0392B")
+        if alt:
+            add_text(s2, LM, 6.75, CW, 0.4, alt, size=12, color=MED_GRAY, align=PP_ALIGN.CENTER)
 
     sections = content_sections(spec)
     for s in sections:
         typ = s.get("type")
         if typ == "h1":
-            open_slide(s.get("text", ""))
+            open_slide(s.get("text", ""), is_divider=True)
         elif typ == "h2":
-            open_slide(s.get("text", ""))
+            if body_tf is None:
+                open_slide(s.get("text", ""))
+            elif est_h > 2.2:
+                open_slide(s.get("text", ""))
+            else:
+                add_h2_row(s.get("text", ""))
         elif typ == "h3":
-            para(s.get("text", ""), size=20, bold=True, color="444444", before=8, after=4)
+            add_h3(s.get("text", ""))
         elif typ == "p":
-            para(s.get("text", ""), size=17, before=2, after=8)
+            para(s.get("text", ""), size=16, before=2, after=8)
         elif typ == "bullets":
             for it in s.get("items", []):
-                para(str(it), size=17, bullet=True, after=5, level=0)
+                para(str(it), size=16, bullet=True, after=6)
         elif typ == "numbered":
             for n, it in enumerate(s.get("items", []), 1):
-                para(str(it), size=17, num=n, after=5)
+                para(str(it), size=16, num=n, after=6)
         elif typ == "quote":
-            para(s.get("text", ""), size=16, italic=True, color="666666", before=4, after=8)
+            add_quote(s.get("text", ""))
         elif typ == "code":
-            for line in (s.get("text", "") or "").split("\n"):
-                para(line if line else " ", size=13, font="Consolas", after=0)
+            add_code(s.get("text", ""))
         elif typ == "table":
             add_table_slide(cur_title + "（附表）" if cur_title else "数据表", s.get("headers") or [], s.get("rows") or [])
+        elif typ == "image":
+            add_image_slide((cur_title + "（配图）") if cur_title else (s.get("alt") or "配图"), s.get("src", ""), s.get("alt", ""))
         elif typ == "divider":
             pass
 
+    # ---- 页脚页码（封面除外） ----
+    total = len(slides) - 1
+    for i, sl in enumerate(slides):
+        if i == 0:
+            continue
+        add_page_number(sl, i, total)
+
     prs.save(out_path)
+    _pptx_full_cleanup(out_path)
 
 
 def pptx_replace_text(shape, find, repl):
@@ -1115,6 +1971,39 @@ def edit_pptx(spec, in_path, out_path):
                         rt = p.add_run()
                         rt.text = str(it)
                         style_run(rt, 17, False, "333333")
+                elif s.get("type") == "image":
+                    slide = prs.slides.add_slide(blank)
+                    local = resolve_image(s.get("src", ""))
+                    if local:
+                        try:
+                            from PIL import Image
+                            im = Image.open(local)
+                            iw, ih = im.size
+                            max_w, max_h = 10.5, 5.4
+                            ratio = min(max_w / iw, max_h / ih) if iw and ih else 1
+                            w = max(1.0, iw * ratio)
+                            h = max(1.0, ih * ratio)
+                            left = (W - w) / 2
+                            top = 1.0 + (5.5 - h) / 2
+                            slide.shapes.add_picture(local, Inches(left), Inches(top), width=Inches(w), height=Inches(h))
+                        except Exception as e:
+                            tf = slide.shapes.add_textbox(Inches(0.75), Inches(2.8), Inches(11.85), Inches(0.8))
+                            p = tf.text_frame.paragraphs[0]
+                            r = p.add_run()
+                            r.text = "图片加载失败: %s" % e
+                            style_run(r, 18, False, "C0392B")
+                    else:
+                        tf = slide.shapes.add_textbox(Inches(0.75), Inches(2.8), Inches(11.85), Inches(0.8))
+                        p = tf.text_frame.paragraphs[0]
+                        r = p.add_run()
+                        r.text = "图片不可用: " + str(s.get("src", ""))
+                        style_run(r, 18, False, "C0392B")
+                    if s.get("alt"):
+                        tf = slide.shapes.add_textbox(Inches(0.75), Inches(6.3), Inches(11.85), Inches(0.5))
+                        p = tf.text_frame.paragraphs[0]
+                        r = p.add_run()
+                        r.text = str(s.get("alt", ""))
+                        style_run(r, 16, False, "666666")
         elif typ == "restyle":
             accent = (op.get("accent") or "").strip()
             if not re.fullmatch(r"#[0-9A-Fa-f]{6}", accent):
@@ -1145,6 +2034,154 @@ def edit_pptx(spec, in_path, out_path):
                                 except Exception:
                                     pass
     prs.save(out_path)
+
+
+# ===========================================================================
+# XLSX（Excel）
+# ===========================================================================
+def render_xlsx(spec, out_path):
+    """从 sections 生成 Excel：h1/h2 作为分组标题行，table 写入工作表，bullets/paragraph 附注。"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    t = theme(spec.get("theme"))
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "数据"
+
+    header_fill = PatternFill("solid", fgColor=t["accent"].lstrip("#"))
+    header_font = Font(name="微软雅黑", size=11, bold=True, color="FFFFFF")
+    title_font = Font(name="微软雅黑", size=13, bold=True, color=t["accent_dark"].lstrip("#"))
+    body_font = Font(name="微软雅黑", size=10.5)
+    alt_fill = PatternFill("solid", fgColor=t["soft"].lstrip("#"))
+    thin = Side(style="thin", color="CCCCCC")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    row_idx = 1
+    if spec.get("title"):
+        c = ws.cell(row=row_idx, column=1, value=spec["title"])
+        c.font = Font(name="微软雅黑", size=16, bold=True, color=t["accent_dark"].lstrip("#"))
+        ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=8)
+        c.alignment = Alignment(horizontal="left", vertical="center")
+        ws.row_dimensions[row_idx].height = 30
+        row_idx += 2
+
+    for s in content_sections(spec):
+        typ = s.get("type")
+        if typ == "table":
+            headers = s.get("headers") or []
+            rows = s.get("rows") or []
+            if not headers and rows:
+                headers = rows[0]
+                rows = rows[1:]
+            for j, h in enumerate(headers, 1):
+                c = ws.cell(row=row_idx, column=j, value=h)
+                c.fill = header_fill
+                c.font = header_font
+                c.alignment = Alignment(horizontal="center", vertical="center")
+                c.border = border
+            ws.row_dimensions[row_idx].height = 22
+            row_idx += 1
+            for i, r in enumerate(rows):
+                for j in range(1, max(len(headers), len(r), 1) + 1):
+                    val = r[j - 1] if j - 1 < len(r) else ""
+                    c = ws.cell(row=row_idx, column=j, value=val)
+                    c.font = body_font
+                    c.border = border
+                    if i % 2 == 1:
+                        c.fill = alt_fill
+                    c.alignment = Alignment(vertical="center", wrap_text=True)
+                ws.row_dimensions[row_idx].height = 20
+                row_idx += 1
+            row_idx += 1
+        elif typ in ("h1", "h2", "h3"):
+            c = ws.cell(row=row_idx, column=1, value=s.get("text", ""))
+            c.font = title_font
+            c.alignment = Alignment(vertical="center")
+            ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=8)
+            ws.row_dimensions[row_idx].height = 24
+            row_idx += 1
+        elif typ in ("p", "quote"):
+            c = ws.cell(row=row_idx, column=1, value=s.get("text", ""))
+            c.font = body_font
+            ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=8)
+            c.alignment = Alignment(wrap_text=True, vertical="top")
+            ws.row_dimensions[row_idx].height = max(18, 16 * (len(s.get("text", "")) // 60 + 1))
+            row_idx += 1
+        elif typ == "bullets":
+            for it in s.get("items", []):
+                c = ws.cell(row=row_idx, column=1, value="• " + str(it))
+                c.font = body_font
+                ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=8)
+                row_idx += 1
+        elif typ == "numbered":
+            for n, it in enumerate(s.get("items", []), 1):
+                c = ws.cell(row=row_idx, column=1, value="%d. %s" % (n, it))
+                c.font = body_font
+                ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=8)
+                row_idx += 1
+        elif typ == "divider":
+            row_idx += 1
+
+    # 自动列宽（估算）
+    for col in range(1, 9):
+        width = 12
+        for r in range(1, min(ws.max_row, 200) + 1):
+            v = ws.cell(row=r, column=col).value
+            if v is not None:
+                width = max(width, min(len(str(v)) * 1.9 + 4, 60))
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+    wb.save(out_path)
+
+
+def edit_xlsx(spec, in_path, out_path):
+    """修改 Excel：replace=查找替换单元格文本；append-sheet=新增工作表（table 数据）；set-title=改第一个工作表名。"""
+    from openpyxl import load_workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    t = theme(spec.get("theme"))
+    wb = load_workbook(in_path)
+    ops = spec.get("ops") or []
+    for op in ops:
+        typ = op.get("type")
+        if typ == "replace":
+            find = op.get("find", "")
+            repl = op.get("replace", "")
+            if not find:
+                continue
+            for ws in wb.worksheets:
+                for row in ws.iter_rows():
+                    for c in row:
+                        if c.value is not None and find in str(c.value):
+                            c.value = str(c.value).replace(find, repl)
+        elif typ == "set-title":
+            title = (op.get("title") or "").strip()
+            if title and wb.worksheets:
+                wb.worksheets[0].title = title
+        elif typ == "append-sheet":
+            ws = wb.create_sheet(title=(op.get("sheet") or "Sheet"))
+            header_fill = PatternFill("solid", fgColor=t["accent"].lstrip("#"))
+            header_font = Font(name="微软雅黑", size=11, bold=True, color="FFFFFF")
+            body_font = Font(name="微软雅黑", size=10.5)
+            thin = Side(style="thin", color="CCCCCC")
+            border = Border(left=thin, right=thin, top=thin, bottom=thin)
+            headers = op.get("headers") or []
+            rows = op.get("rows") or []
+            for j, h in enumerate(headers, 1):
+                c = ws.cell(row=1, column=j, value=h)
+                c.fill = header_fill
+                c.font = header_font
+                c.alignment = Alignment(horizontal="center", vertical="center")
+                c.border = border
+            for i, r in enumerate(rows, 2):
+                for j in range(1, max(len(headers), len(r), 1) + 1):
+                    val = r[j - 1] if j - 1 < len(r) else ""
+                    c = ws.cell(row=i, column=j, value=val)
+                    c.font = body_font
+                    c.border = border
+    wb.save(out_path)
 
 
 # ===========================================================================
@@ -1713,6 +2750,183 @@ def lit_verify(references):
     return {"results": results}
 
 
+# ---------------------------------------------------------------------------
+# 中药/方剂数据核验（tcm-verify）
+# ---------------------------------------------------------------------------
+# 内置权威核验规则：剂量上限（参照《中国药典》2020 常用剂量范围）、
+# 十八反十九畏配伍禁忌、毒性药警示。
+# 等级：A=《中国药典》原文级 / B=教材共识级 / C=经典医籍级（未在线核验）
+DOSE_LIMITS = {
+    "甘草": 10, "黄连": 5, "黄芩": 10, "栀子": 10, "知母": 12, "黄柏": 12,
+    "细辛": 3, "附子": 15, "半夏": 9, "吴茱萸": 5, "山豆根": 6, "青黛": 3,
+    "人参": 9, "西洋参": 6, "五味子": 6, "乌梅": 12, "酸枣仁": 15, "远志": 10,
+    "石菖蒲": 10, "木通": 6, "滑石": 20, "泽泻": 10, "车前子": 15, "苍术": 9,
+    "厚朴": 10, "枳实": 10, "香附": 10, "郁金": 10, "莪术": 9, "三棱": 10,
+    "桃仁": 10, "红花": 10, "三七": 9, "川芎": 10, "丹参": 15, "益母草": 30,
+    "白花蛇舌草": 60, "半枝莲": 30, "紫花地丁": 30, "鱼腥草": 25, "蒲公英": 15,
+    "板蓝根": 15, "金银花": 15, "连翘": 15, "生石膏": 60, "茯苓": 15, "白术": 12,
+    "黄芪": 30, "党参": 30, "太子参": 30, "山药": 30, "薏苡仁": 30, "砂仁": 6,
+    "陈皮": 10, "肉桂": 5, "干姜": 10, "吴茱萸": 5, "小茴香": 6, "肉豆蔻": 10,
+    "诃子": 10, "赤石脂": 12, "玄明粉": 9, "硼砂": 3, "冰片": 0.3, "儿茶": 3,
+    "血竭": 2, "乳香": 5, "没药": 5, "土茯苓": 60, "忍冬藤": 30, "路路通": 10,
+    "独活": 10, "防己": 10, "木香": 6, "槟榔": 10, "乌药": 10, "荔枝核": 10,
+    "山楂": 12, "神曲": 15, "麦芽": 15, "鸡内金": 10, "莱菔子": 12, "地榆": 15,
+    "槐花": 10, "仙茅": 10, "淫羊藿": 10, "巴戟天": 10, "肉苁蓉": 10, "菟丝子": 12,
+    "补骨脂": 10, "杜仲": 10, "续断": 15, "骨碎补": 9, "益智仁": 10, "牛膝": 12,
+    "王不留行": 10, "苍耳子": 10, "辛夷": 10, "荆芥": 10, "防风": 10, "羌活": 10,
+    "紫苏叶": 10, "生姜": 10, "桔梗": 10, "射干": 9, "桑白皮": 12, "葶苈子": 10,
+    "紫菀": 10, "款冬花": 10, "百部": 9, "川贝母": 10, "浙贝母": 10, "瓜蒌": 15,
+    "白蔹": 10, "红藤": 15, "败酱草": 15, "白头翁": 15, "秦皮": 12, "马齿苋": 15,
+    "芦根": 30, "天花粉": 15, "桑叶": 10, "菊花": 10, "薄荷": 6, "牛蒡子": 12,
+    "升麻": 10, "葛根": 15, "白芷": 10, "柴胡": 10, "当归": 12, "白芍": 15,
+    "赤芍": 12, "生地黄": 15, "熟地黄": 15, "麦冬": 12, "玄参": 15, "牡丹皮": 12,
+    "夏枯草": 15, "决明子": 15, "女贞子": 12, "墨旱莲": 12, "山茱萸": 12,
+    "枸杞子": 12, "肉桂": 5, "石斛": 12, "玉竹": 12, "黄精": 15, "白鲜皮": 10,
+    "地肤子": 15, "苦参": 9, "紫草": 10, "白及": 15, "仙鹤草": 12, "白茅根": 30,
+    "侧柏叶": 12, "炮姜": 6, "龙胆草": 6, "马勃": 6, "山慈菇": 9, "威灵仙": 10,
+    "桑寄生": 15, "僵蚕": 10, "天麻": 10, "钩藤": 12, "龙骨": 30, "牡蛎": 30,
+    "珍珠母": 25, "酸枣仁": 15, "远志": 10, "合欢皮": 12, "夜交藤": 15,
+    "茯苓": 15, "泽泻": 10, "茵陈": 15, "藿香": 10, "佩兰": 10, "苍术": 9,
+    "木香": 6, "川芎": 10, "丹参": 15, "桃仁": 10, "红花": 10, "三七": 9,
+    "延胡索": 10, "川楝子": 10, "枸杞": 12, "杜仲": 10, "续断": 15, "菟丝子": 12,
+}
+
+TOXIC_HERBS = {
+    "附子": "有毒；先煎久煎（30-60分钟）；孕妇禁用",
+    "半夏": "生品有毒，内服宜制；不宜与乌头类同用",
+    "细辛": "有小毒；用量不宜过大（≤3g）",
+    "苍耳子": "有毒；过量可致中毒",
+    "山豆根": "有毒；用量不宜过大",
+    "吴茱萸": "有小毒",
+    "仙茅": "有毒",
+    "槟榔": "多服久服可致中毒",
+    "苦参": "用量过大可致中毒",
+    "青黛": "难溶于水，一般入丸散",
+    "木通": "关木通有肾毒性（现药典已删）；须用川木通/木通，肾功不全者禁用",
+    "雄黄": "有毒；不入煎剂",
+    "朱砂": "有毒；不入煎剂；不宜久服",
+    "马钱子": "大毒；炮制后入丸散",
+    "斑蝥": "大毒",
+    "巴豆": "大毒；制霜入丸散",
+    "甘遂": "有毒；不宜与甘草同用",
+    "大戟": "有毒；不宜与甘草同用",
+    "芫花": "有毒；不宜与甘草同用",
+    "牵牛子": "有毒；不宜与巴豆同用",
+    "藜芦": "有毒；不宜与人参、沙参、丹参、玄参、苦参、细辛、芍药同用",
+}
+
+SHIBA_FAN = ["甘草反海藻", "甘草反京大戟", "甘草反红大戟", "甘草反甘遂", "甘草反芫花",
+             "乌头反半夏", "乌头反瓜蒌", "乌头反贝母", "乌头反白蔹", "乌头反白及",
+             "藜芦反人参", "藜芦反沙参", "藜芦反丹参", "藜芦反玄参", "藜芦反苦参",
+             "藜芦反细辛", "藜芦反芍药"]
+SHIJIU_WEI = ["硫黄畏朴硝", "水银畏砒霜", "狼毒畏密陀僧", "巴豆畏牵牛", "丁香畏郁金",
+              "川乌畏犀角", "草乌畏犀角", "牙硝畏三棱", "官桂畏赤石脂", "人参畏五灵脂"]
+
+
+def tcm_query_data():
+    """加载 medkit 中医药数据库并返回元信息（供查询工具缓存校验）。"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "medkit", "tcm_data.json")
+    if not os.path.exists(path):
+        err("tcm_data.json 不存在: %s" % path)
+    with io.open(path, "r", encoding="utf-8") as f:
+        d = json.load(f)
+    return {
+        "herbs": len(d.get("herbs") or []),
+        "pairs": len(d.get("pairs") or []),
+        "formulas": len(d.get("formulas") or []),
+        "incompatibilities": (d.get("incompatibilities") or {}).get("十八反") or [],
+        "path": path,
+    }
+
+
+def tcm_verify(items, with_lit=True):
+    """核验中药/方剂数据条目。
+    items: [{kind: 'herb'|'pair'|'formula'|'incompatibility', name, dose?, composition?, notes?}]
+    输出：每条核验结论（内置规则 + 可选 PubMed 佐证检索）。
+    """
+    results = []
+    for it in items:
+        kind = it.get("kind") or "herb"
+        name = (it.get("name") or "").strip()
+        entry = {"kind": kind, "name": name, "checks": [], "risk": "ok", "verified": False}
+
+        if kind == "herb":
+            dose = it.get("dose") or ""
+            # 剂量上限核验
+            m = re.findall(r"(\d+(?:\.\d+)?)\s*~\s*(\d+(?:\.\d+)?)", dose) or re.findall(r"(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)", dose)
+            limit = DOSE_LIMITS.get(name)
+            if m and limit is not None:
+                hi = float(m[0][1])
+                if hi > limit:
+                    entry["checks"].append("⚠ 剂量上限 %s g 超过参考上限 %s g（《中国药典》2020 常用量）" % (hi, limit))
+                    entry["risk"] = "dose-over"
+                else:
+                    entry["checks"].append("✅ 剂量上限 %s g 在参考范围（≤%s g）内" % (hi, limit))
+                    entry["verified"] = True
+            elif not m:
+                entry["checks"].append("⚠ 未能解析剂量范围，需人工核对")
+                entry["risk"] = "dose-unparsed"
+            # 毒性药核验
+            tox = TOXIC_HERBS.get(name)
+            if tox:
+                entry["checks"].append("☣ 毒性药：%s" % tox)
+                entry["risk"] = entry["risk"] if entry["risk"] != "ok" else "toxic"
+        elif kind == "pair":
+            comp = (it.get("composition") or name or "").replace("、", "-").replace("，", "-").replace(" ", "")
+            # 十八反十九畏核验：检查组合内是否出现反药对
+            fan_hit = None
+            for f in SHIBA_FAN + SHIJIU_WEI:
+                pair_names = f.split("反") if "反" in f else f.split("畏")
+                if len(pair_names) == 2:
+                    a, b = pair_names[0].strip(), pair_names[1].strip()
+                    if a in comp and b in comp:
+                        fan_hit = f
+                        break
+            if fan_hit:
+                entry["checks"].append("❌ 配伍禁忌：%s" % fan_hit)
+                entry["risk"] = "incompatible"
+            else:
+                entry["checks"].append("✅ 未检出十八反/十九畏禁忌组合")
+                entry["verified"] = True
+        elif kind == "formula":
+            comp = (it.get("composition") or "").replace("、", "-").replace("，", "-").replace(" ", "")
+            fan_hit = None
+            for f in SHIBA_FAN + SHIJIU_WEI:
+                pair_names = f.split("反") if "反" in f else f.split("畏")
+                if len(pair_names) == 2:
+                    a, b = pair_names[0].strip(), pair_names[1].strip()
+                    if a in comp and b in comp:
+                        fan_hit = f
+                        break
+            if fan_hit:
+                entry["checks"].append("❌ 方剂内配伍禁忌：%s" % fan_hit)
+                entry["risk"] = "incompatible"
+            else:
+                entry["checks"].append("✅ 未检出方内十八反/十九畏冲突")
+                entry["verified"] = True
+        elif kind == "incompatibility":
+            entry["checks"].append("ℹ 十八反/十九畏为《中国药典》2020 用药禁忌（等级 A）")
+            entry["verified"] = True
+
+        # 文献佐证（PubMed，可选；每个条目最多 1 次检索，控制速率）
+        if with_lit and kind in ("herb", "pair") and entry["risk"] != "incompatible":
+            try:
+                time.sleep(0.35)
+                term = name.replace("-", " ") + " traditional Chinese medicine"
+                ids, _cnt = pubmed_esearch(term, retmax=3)
+                if ids:
+                    entry["literature"] = ids[:3]
+                    entry["checks"].append("📚 PubMed 检索到 %d 条相关文献（PMID: %s）" % (len(ids), ", ".join(ids[:3])))
+            except Exception:
+                pass
+
+        results.append(entry)
+    return {"results": results}
+
+
+
+
+
 
     data = sys.stdin.buffer.read()
     data = re.sub(rb"\s+", b"", data)
@@ -1760,6 +2974,41 @@ def cmd_meta(path):
     ok({"format": fmt, "size": os.path.getsize(path), "name": os.path.basename(path)})
 
 
+def cmd_image_search(query, max_results=5, image_type="all"):
+    res = image_search(query, max_results=max_results, image_type=image_type)
+    if res.get("error"):
+        err(res["error"])
+    ok(res)
+
+
+def cmd_image_download(url, out_path):
+    if not url:
+        err("缺少图片 URL")
+    local = resolve_image(url)
+    if not local:
+        err("图片下载失败: %s" % url)
+    # resolve_image 可能已下载到 tmp，若指定输出则复制过去
+    if os.path.abspath(local) != os.path.abspath(out_path):
+        import shutil
+        shutil.copyfile(local, out_path)
+    ok({"path": out_path, "size": os.path.getsize(out_path)})
+
+
+def cmd_image_info(path):
+    if not os.path.exists(path):
+        err("图片不存在: %s" % path)
+    try:
+        ok(image_info(path))
+    except Exception as e:
+        err("无法读取图片: %s" % e)
+
+
+def cmd_image_recognize(path):
+    if not os.path.exists(path):
+        err("图片不存在: %s" % path)
+    ok(image_recognize(path))
+
+
 def _load_spec(argv_spec_path=None):
     """优先从 JSON 文件读 spec，否则读 stdin（向后兼容）。"""
     if argv_spec_path:
@@ -1778,7 +3027,10 @@ def cmd_create(fmt, out_path, spec_path=None):
     if fmt == "docx":
         render_docx(spec, out_path)
     elif fmt == "pptx":
-        render_pptx(spec, out_path)
+        if spec.get("visual") or spec.get("style") == "visual":
+            render_pptx_visual(spec, out_path)
+        else:
+            render_pptx(spec, out_path)
     elif fmt == "pdf":
         render_pdf(spec, out_path)
     elif fmt == "md":
@@ -1808,6 +3060,8 @@ def cmd_create(fmt, out_path, spec_path=None):
             lines.append("")
         with io.open(out_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
+    elif fmt == "xlsx":
+        render_xlsx(spec, out_path)
     else:
         err("不支持的输出格式: %s" % fmt)
     if not os.path.exists(out_path):
@@ -1830,6 +3084,8 @@ def cmd_edit(fmt, in_path, out_path, spec_path=None):
         edit_pdf(spec, in_path, out_path)
     elif fmt in ("md", "txt"):
         edit_md(spec, in_path, out_path)
+    elif fmt == "xlsx":
+        edit_xlsx(spec, in_path, out_path)
     else:
         err("不支持的编辑格式: %s" % fmt)
     ok({"size": os.path.getsize(out_path)})
@@ -1885,6 +3141,33 @@ def main():
             with io.open(sys.argv[2], "r", encoding="utf-8") as f:
                 refs = json.loads(f.read() or "[]")
             ok(lit_verify(refs))
+        elif cmd == "image-search":
+            if len(sys.argv) not in (3, 4, 5):
+                err("image-search 需要 <query> [max_results] [photo|vector|all]")
+            n = int(sys.argv[3]) if len(sys.argv) >= 4 else 5
+            itype = sys.argv[4] if len(sys.argv) == 5 else "all"
+            cmd_image_search(sys.argv[2], max_results=n, image_type=itype)
+        elif cmd == "image-download":
+            if len(sys.argv) != 4:
+                err("image-download 需要 <url> <out_path>")
+            cmd_image_download(sys.argv[2], sys.argv[3])
+        elif cmd == "image-info":
+            if len(sys.argv) != 3:
+                err("image-info 需要 <file>")
+            cmd_image_info(sys.argv[2])
+        elif cmd == "image-recognize":
+            if len(sys.argv) != 3:
+                err("image-recognize 需要 <file>")
+            cmd_image_recognize(sys.argv[2])
+        elif cmd == "tcm-verify":
+            if len(sys.argv) not in (3, 4):
+                err("tcm-verify 需要 <items_json_path> [with_lit]")
+            with io.open(sys.argv[2], "r", encoding="utf-8") as f:
+                items = json.loads(f.read() or "[]")
+            with_lit = (len(sys.argv) == 4 and sys.argv[3] == "0") is False
+            ok(tcm_verify(items, with_lit=with_lit))
+        elif cmd == "tcm-query":
+            ok(tcm_query_data())
         else:
             err("未知命令: %s" % cmd)
     except SystemExit:

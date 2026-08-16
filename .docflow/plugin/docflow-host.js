@@ -15,6 +15,39 @@ return {
 
     const files = new Map()
     let seq = 0
+    const META_PATH = ROOT + '/meta.json'
+    let meta = {}
+
+    async function loadMeta() {
+      try {
+        const raw = await fs.readText(await fs.resolve(META_PATH), 8 * 1024 * 1024)
+        if (raw) meta = JSON.parse(raw) || {}
+      } catch (e) {}
+    }
+    async function saveMeta() {
+      try {
+        await fs.writeText(await fs.resolve(META_PATH), JSON.stringify(meta), undefined, undefined, POLICY)
+      } catch (e) {}
+    }
+    function metaOf(id, dflt) {
+      return meta[id] || (meta[id] = dflt || {})
+    }
+    function fmtTime(ts) {
+      if (!ts) return ''
+      const d = new Date(ts)
+      const p = (n) => (n < 10 ? '0' + n : '' + n)
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+    }
+    function opsSummary(ops) {
+      const names = { replace: '查找替换', 'set-title': '改标题', append: '追加内容', restyle: '换主题色' }
+      const cnt = {}
+      for (const op of ops || []) {
+        const n = names[op && op.type] || (op && op.type) || '编辑'
+        cnt[n] = (cnt[n] || 0) + 1
+      }
+      const parts = Object.keys(cnt).map((k) => (cnt[k] > 1 ? k + '×' + cnt[k] : k))
+      return parts.join(' · ') || '修改文档'
+    }
 
     // fs/shell 的默认沙箱策略工作区根是 /root，本会话工作区在 /opt/oral-mucosa-agent，
     // 所有写操作必须显式声明 workspace-write + 工作区根
@@ -38,7 +71,7 @@ return {
     function fmtOf(name) {
       const e = extOf(name)
       if (e === 'markdown') return 'md'
-      return ['docx', 'pptx', 'ppt', 'pdf', 'txt', 'md'].indexOf(e) >= 0 ? e : 'file'
+      return ['docx', 'pptx', 'ppt', 'pdf', 'txt', 'md', 'xlsx', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].indexOf(e) >= 0 ? e : 'file'
     }
     function newId(kind) { return kind + '_' + Date.now().toString(36) + '_' + (seq++).toString(36) }
     // 下载地址用相对路径：浏览器会按当前页面 origin 解析，
@@ -62,9 +95,18 @@ return {
       pdf: 'application/pdf',
       txt: 'text/plain; charset=utf-8',
       md: 'text/markdown; charset=utf-8',
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      gif: 'image/gif',
+      webp: 'image/webp',
+      bmp: 'image/bmp',
+      svg: 'image/svg+xml',
     }
 
     function pick(info) {
+      const m = meta[info.id] || {}
       return {
         fileId: info.id,
         name: info.name,
@@ -73,6 +115,10 @@ return {
         format: info.format,
         createdAt: info.createdAt,
         downloadUrl: urlOf(info.id),
+        direction: m.direction || (info.kind === 'uploads' ? 'upload' : 'output'),
+        mtime: m.mtime || fmtTime(info.createdAt),
+        request: m.request || '',
+        summary: m.summary || '',
       }
     }
 
@@ -113,8 +159,19 @@ return {
       if (extraArgs) args += ' ' + extraArgs
       return runPy(args)
     }
+    // DSH 新版 shell 服务：stdout/stderr 为 CollectedOutput 对象 {text, truncated, spillPath}，
+    // 旧版为纯字符串；两种形状都兼容
+    function outText(v) {
+      if (typeof v === 'string') return v
+      if (v && typeof v === 'object' && typeof v.text === 'string') return v.text
+      return ''
+    }
+    function errOf(res, n) {
+      const s = outText(res && res.stderr) || outText(res && res.stdout)
+      return s.slice(0, n || 400)
+    }
     function parseResult(res) {
-      try { return JSON.parse(String((res && res.stdout) || '')) } catch (e) { return null }
+      try { return JSON.parse(outText(res && res.stdout)) } catch (e) { return null }
     }
 
     // ---------- 文献检索 / 核查（真实来源：PubMed E-utilities + Crossref） ----------
@@ -124,7 +181,7 @@ return {
       const retmax = Math.min(Math.max(parseInt(args.maxResults, 10) || 8, 1), 20)
       const res = await runPy('lit-search ' + q(term) + ' ' + retmax)
       const j = parseResult(res)
-      if (!j || !j.ok) return { ok: false, error: '检索失败: ' + String(res.stderr || res.stdout || '').slice(0, 400) }
+      if (!j || !j.ok) return { ok: false, error: '检索失败: ' + errOf(res) }
       return { ok: true, count: j.count, items: j.items || [] }
     }
 
@@ -134,7 +191,7 @@ return {
       const rows = Math.min(Math.max(parseInt(args.maxResults, 10) || 5, 1), 10)
       const res = await runPy('lit-crossref ' + q(query) + ' ' + rows)
       const j = parseResult(res)
-      if (!j || !j.ok) return { ok: false, error: 'Crossref 检索失败: ' + String(res.stderr || res.stdout || '').slice(0, 400) }
+      if (!j || !j.ok) return { ok: false, error: 'Crossref 检索失败: ' + errOf(res) }
       return { ok: true, items: j.items || [] }
     }
 
@@ -143,13 +200,45 @@ return {
       if (!Array.isArray(refs) || !refs.length) return { ok: false, error: '缺少 references 数组' }
       const res = await runPyJson('lit-verify', refs)
       const j = parseResult(res)
-      if (!j || !j.ok) return { ok: false, error: '核查失败: ' + String(res.stderr || res.stdout || '').slice(0, 400) }
+      if (!j || !j.ok) return { ok: false, error: '核查失败: ' + errOf(res) }
       return { ok: true, results: j.results || [] }
     }
 
     ctx.effect(() => harness.handle('lit-search', (a) => handleLitSearch(a)))
     ctx.effect(() => harness.handle('lit-crossref', (a) => handleLitCrossref(a)))
     ctx.effect(() => harness.handle('lit-verify', (a) => handleLitVerify(a)))
+
+    // ---------- 图片搜索 / 识别 ----------
+    async function handleImageSearch(args) {
+      const query = String(args.query || '').trim()
+      if (!query) return { ok: false, error: '缺少搜索词 query' }
+      const max = Math.min(Math.max(parseInt(args.maxResults, 10) || 5, 1), 20)
+      const type = ['photo', 'vector', 'all'].indexOf(args.type) >= 0 ? args.type : 'all'
+      const res = await runPy('image-search ' + q(query) + ' ' + max + ' ' + q(type))
+      const j = parseResult(res)
+      if (!j || !j.ok) return { ok: false, error: '图片搜索失败: ' + errOf(res) }
+      return { ok: true, items: j.items || [] }
+    }
+
+    async function handleImageRecognize(args) {
+      let path = ''
+      if (args.fileId) {
+        const info = files.get(args.fileId)
+        if (!info) return { ok: false, error: '文件不存在' }
+        path = info.path
+      } else if (args.path) {
+        path = String(args.path)
+      } else {
+        return { ok: false, error: '需要 fileId 或 path' }
+      }
+      const res = await runPy('image-recognize ' + q(path))
+      const j = parseResult(res)
+      if (!j || !j.ok) return { ok: false, error: '识别失败: ' + errOf(res) }
+      return { ok: true, info: j.info || {}, ocr: j.ocr || '', description: j.description || '', vision_error: j.vision_error || '' }
+    }
+
+    ctx.effect(() => harness.handle('image-search', (a) => handleImageSearch(a)))
+    ctx.effect(() => harness.handle('image-recognize', (a) => handleImageRecognize(a)))
 
     async function ensureDirs() {
       try {
@@ -178,6 +267,11 @@ return {
             format: fmtOf(m[2]),
             createdAt: Date.now(),
           })
+          // 恢复历史元数据；缺失时用文件 mtime 兜底
+          if (!meta[id]) {
+            const st = await fs.stat(await fs.resolve(dir + '/' + e.name)).catch(() => null)
+            meta[id] = { direction: kind === 'uploads' ? 'upload' : 'output', mtime: fmtTime((st && st.mtime) || Date.now()), request: '', summary: '' }
+          }
         }
       } catch (e) {}
     }
@@ -188,7 +282,7 @@ return {
       return n
     }
 
-    ensureDirs().then(() => Promise.all([scanDir(UPLOADS, 'uploads'), scanDir(OUTPUTS, 'outputs')])).catch(() => {})
+    ensureDirs().then(() => loadMeta().then(() => Promise.all([scanDir(UPLOADS, 'uploads'), scanDir(OUTPUTS, 'outputs')]))).catch(() => {})
 
     ctx.effect(() => webServer.register({
       kind: 'prefix',
@@ -261,7 +355,7 @@ return {
       }
       const res = await runPy('decode-file ' + q(b64Path) + ' ' + q(path))
       if (res.exitCode !== 0) {
-        return { ok: false, error: '保存失败: ' + String(res.stderr || res.stdout || '').slice(0, 400) }
+        return { ok: false, error: '保存失败: ' + errOf(res) }
       }
       const info = { id: id, name: name, kind: 'uploads', path: path, size: 0, format: fmtOf(name), createdAt: Date.now() }
       try {
@@ -269,6 +363,8 @@ return {
         info.size = (st && st.size) || 0
       } catch (e) {}
       files.set(id, info)
+      meta[id] = { direction: 'upload', mtime: fmtTime(Date.now()), request: (args && args.request) || '', summary: (args && args.summary) || '上传文件' }
+      saveMeta()
       let text = ''
       let chars = 0
       let detail = null
@@ -301,7 +397,7 @@ return {
       if (info.format === 'ppt') return { ok: false, error: '旧版 .ppt 无法解析，请另存为 .pptx 后重新上传' }
       const ex = await runPy('extract ' + q(info.path))
       const j = parseResult(ex)
-      if (!j || !j.ok) return { ok: false, error: '解析失败: ' + String(ex.stderr || ex.stdout || '').slice(0, 400) }
+      if (!j || !j.ok) return { ok: false, error: '解析失败: ' + errOf(ex) }
       const maxChars = (args && args.maxChars) || 50000
       return {
         ok: true,
@@ -317,6 +413,10 @@ return {
       const info = files.get(args && args.fileId)
       if (!info) return { ok: false, error: '文件不存在' }
       files.delete(info.id)
+      if (meta[info.id]) {
+        delete meta[info.id]
+        saveMeta()
+      }
       try {
         const spec = shell.resolve({ command: 'rm -f ' + q(info.path), workdir: base, timeoutMs: 30000, sandboxPolicy: POLICY })
         await shell.run(spec)
@@ -341,7 +441,7 @@ return {
       const fmt = String(args.format || 'docx').toLowerCase()
       if (fmt === 'ppt') return { ok: false, error: '不支持旧版 .ppt 输出，请使用 pptx' }
       const baseName = sanitize(args.outputName || ((args.title || '文档') + '.' + fmt))
-      const finalName = /\.(docx|pptx|pdf|md|txt)$/.test(baseName) ? baseName : baseName + '.' + fmt
+      const finalName = /\.(docx|pptx|pdf|md|txt|xlsx)$/.test(baseName) ? baseName : baseName + '.' + fmt
       const id = newId('o')
       const path = OUTPUTS + '/' + id + '__' + finalName
       const res = await runPySpec('create', fmt, path, null, {
@@ -350,11 +450,12 @@ return {
         author: args.author || '',
         date: args.date || '',
         theme: args.theme || 'blue',
+        style: args.style,
         content: args.content || '',
         sections: args.sections,
       })
       if (res.exitCode !== 0) {
-        return { ok: false, error: '生成失败: ' + String(res.stderr || res.stdout || '').slice(0, 500) }
+        return { ok: false, error: '生成失败: ' + errOf(res, 500) }
       }
       const info = { id: id, name: finalName, kind: 'outputs', path: path, size: 0, format: fmt, createdAt: Date.now() }
       try {
@@ -362,6 +463,13 @@ return {
         info.size = (st && st.size) || 0
       } catch (e) {}
       files.set(id, info)
+      meta[id] = {
+        direction: 'output',
+        mtime: fmtTime(Date.now()),
+        request: (args && args.request) || '',
+        summary: (args && args.summary) || '生成 ' + fmt.toUpperCase() + ' 文档',
+      }
+      saveMeta()
       return {
         ok: true,
         value: { fileId: id, fileName: finalName, format: fmt, size: info.size, downloadUrl: urlOf(id), message: '生成成功' },
@@ -374,16 +482,18 @@ return {
       let fmt = String(args.format || info.format).toLowerCase()
       if (fmt === 'markdown') fmt = 'md'
       if (fmt === 'ppt') return { ok: false, error: '旧版 .ppt 无法编辑，请另存为 .pptx 后重新上传' }
-      if (['docx', 'pptx', 'pdf', 'md', 'txt'].indexOf(fmt) < 0) return { ok: false, error: '不支持的格式: ' + fmt }
+      if (['docx', 'pptx', 'pdf', 'md', 'txt', 'xlsx'].indexOf(fmt) < 0) return { ok: false, error: '不支持的格式: ' + fmt }
       const base = String(info.name).replace(/\.[^.]+$/, '') || '文档'
       const outName = sanitize(args.outputName || (base + '_修改.' + fmt))
       const finalName = /\.(docx|pptx|pdf|md|txt)$/.test(outName) ? outName : outName + '.' + fmt
       const id = newId('o')
       const path = OUTPUTS + '/' + id + '__' + finalName
       const spec = { theme: 'blue', ops: args.ops || [] }
-      const res = await runPySpec('edit', fmt, path, info.path, spec)
+      // 引擎 edit 参数顺序：edit <fmt> <源文件> <输出> [spec]
+      const specPath = await writeJsonTemp(spec)
+      const res = await runPy('edit ' + fmt + ' ' + q(info.path) + ' ' + q(path) + ' ' + q(specPath))
       if (res.exitCode !== 0) {
-        return { ok: false, error: '修改失败: ' + String(res.stderr || res.stdout || '').slice(0, 500) }
+        return { ok: false, error: '修改失败: ' + errOf(res, 500) }
       }
       const nfo = { id: id, name: finalName, kind: 'outputs', path: path, size: 0, format: fmt, createdAt: Date.now() }
       try {
@@ -391,6 +501,13 @@ return {
         nfo.size = (st && st.size) || 0
       } catch (e) {}
       files.set(id, nfo)
+      meta[id] = {
+        direction: 'output',
+        mtime: fmtTime(Date.now()),
+        request: (args && args.request) || '',
+        summary: (args && args.summary) || opsSummary(args.ops),
+      }
+      saveMeta()
       return {
         ok: true,
         value: { fileId: id, fileName: finalName, format: fmt, size: nfo.size, downloadUrl: urlOf(id), message: '修改成功' },
@@ -412,14 +529,16 @@ return {
 
     ctx.effect(() => harness.registerTool(ctx, harness.defineTool({
       name: 'docflow_create_document',
-      description: '根据 markdown 内容生成精美文档（docx/pptx/pdf/md）。文档含封面、主题配色、标题、列表、表格、引用、代码块、页眉页脚页码。生成后文件出现在浏览器的「文档工作流」面板并可下载。',
+      description: '根据 markdown 内容生成精美文档（docx/pptx/pdf/md/xlsx）。docx/pptx/pdf 含封面、主题配色、标题、列表、表格、引用、代码块、页眉页脚页码；xlsx 按表格数据生成带主题配色的 Excel。pptx 可指定 style=visual 启用可视化大字版（正文最小24pt、卡片网格、大色块）。生成后文件出现在浏览器的「文档工作流」面板并可下载。',
       parameters: {
-        format: { type: 'string', enum: ['docx', 'pptx', 'pdf', 'md'], required: true, description: '输出格式：docx=Word、pptx=PPT、pdf=PDF、md=Markdown' },
+        format: { type: 'string', enum: ['docx', 'pptx', 'pdf', 'md', 'xlsx'], required: true, description: '输出格式：docx=Word、pptx=PPT、pdf=PDF、md=Markdown、xlsx=Excel' },
         title: { type: 'string', required: true, description: '文档标题（封面主标题）' },
         subtitle: { type: 'string', description: '封面副标题' },
         author: { type: 'string', description: '作者/单位' },
         date: { type: 'string', description: '日期文字，如 2026年8月' },
         theme: { type: 'string', enum: ['blue', 'green', 'red', 'purple', 'gold', 'slate'], description: '配色主题，默认 blue' },
+        style: { type: 'string', enum: ['classic', 'visual'], description: 'pptx 排版风格：classic=麦肯锡经典（默认）；visual=可视化大字版（正文最小24pt，卡片网格铺满页面，适合演示/教程）' },
+        request: { type: 'string', description: '用户要求（一句话记录在文件列表中，便于追溯本次生成目的）' },
         content: { type: 'string', description: '正文 markdown：\\n# 一级标题 / ## 二级标题 / ### 三级标题 / 普通段落 / - 无序列表 / 1. 有序列表 / > 引用 / | 表头 | 表头 | + | --- | --- | + 数据行 / ```代码块``` / --- 分隔线' },
         outputName: { type: 'string', description: '输出文件名（可省略扩展名）' },
       },
@@ -441,7 +560,7 @@ return {
       description: '修改已有的上传或生成文档：查找替换文本、改标题、追加内容（markdown）、更换主题色。输出为新文件，可下载。',
       parameters: {
         sourceFileId: { type: 'string', required: true, description: '源文件 ID（docflow_list_documents 查看）' },
-        format: { type: 'string', enum: ['docx', 'pptx', 'pdf', 'md', 'txt'], description: '源文件格式，缺省自动判断' },
+        format: { type: 'string', enum: ['docx', 'pptx', 'pdf', 'md', 'txt', 'xlsx'], description: '源文件格式，缺省自动判断' },
         ops: {
           type: 'array',
           required: true,
@@ -460,6 +579,7 @@ return {
           },
         },
         outputName: { type: 'string', description: '输出文件名（可省略扩展名）' },
+        request: { type: 'string', description: '用户要求（一句话记录在文件列表中，便于追溯本次修改目的）' },
       },
       output: {
         schema: OUT_SCHEMA,
@@ -547,7 +667,7 @@ return {
         if (info.format === 'ppt') throw new Error('旧版 .ppt 无法读取，请另存为 .pptx 后重新上传')
         const ex = await runPy('extract ' + q(info.path))
         const j = parseResult(ex)
-        if (!j || !j.ok) throw new Error('无法读取源文件内容: ' + String(ex.stderr || ex.stdout || '').slice(0, 300))
+        if (!j || !j.ok) throw new Error('无法读取源文件内容: ' + errOf(ex, 300))
         const base = String(info.name).replace(/\.[^.]+$/, '') || '文档'
         const createArgs = {
           format: fmt,
@@ -654,6 +774,73 @@ return {
         const r = await handleLitVerify(args)
         if (!r.ok) throw new Error(r.error)
         return { ok: true, results: r.results }
+      },
+    })))
+
+    ctx.effect(() => harness.registerTool(ctx, harness.defineTool({
+      name: 'docflow_image_search',
+      description: '从网络搜索图片或矢量图（当前使用 Wikimedia Commons，无需 API Key），返回可下载 URL、缩略图、尺寸与类型，便于插入 PPT/文档。',
+      parameters: {
+        query: { type: 'string', required: true, description: '搜索词，如 口腔黏膜 病理 示意图' },
+        maxResults: { type: 'integer', description: '最多返回条数，默认 5，上限 20' },
+        type: { type: 'string', enum: ['photo', 'vector', 'all'], description: 'photo=位图照片/插画；vector=SVG矢量图；all=全部' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            items: { type: 'array', items: { type: 'json' } },
+          },
+        },
+        render(args, value) {
+          const items = value.items || []
+          const lines = items.map((it, i) => '[' + (i + 1) + '] ' + (it.title || '') + '\n    类型: ' + (it.mime || '') + '  ' + (it.width || 0) + 'x' + (it.height || 0) + '\n    下载: ' + (it.thumb || it.url || ''))
+          return [{ type: 'text', text: '图片搜索返回 ' + items.length + ' 条：\n' + (lines.join('\n') || '（无结果）') }]
+        },
+      },
+      async execute(args) {
+        const r = await handleImageSearch(args)
+        if (!r.ok) throw new Error(r.error)
+        return { ok: true, items: r.items }
+      },
+    })))
+
+    ctx.effect(() => harness.registerTool(ctx, harness.defineTool({
+      name: 'docflow_image_recognize',
+      description: '识别图片：返回图片格式/尺寸/主色，并尝试 OCR 文字识别；如配置视觉 API 则返回图片内容描述。',
+      parameters: {
+        fileId: { type: 'string', description: '已上传图片的文件 ID（docflow_list_documents 查看）' },
+        path: { type: 'string', description: '或直接传服务器本地图片路径' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            info: { type: 'json' },
+            ocr: { type: 'string' },
+            description: { type: 'string' },
+            vision_error: { type: 'string' },
+          },
+        },
+        render(args, value) {
+          const info = value.info || {}
+          const lines = [
+            '格式: ' + (info.format || ''),
+            '尺寸: ' + (info.width || '') + 'x' + (info.height || ''),
+            '主色: ' + (info.dominant_rgb || ''),
+          ]
+          if (value.ocr) lines.push('OCR: ' + value.ocr)
+          if (value.description) lines.push('描述: ' + value.description)
+          if (value.vision_error) lines.push('视觉API提示: ' + value.vision_error)
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      async execute(args) {
+        const r = await handleImageRecognize(args)
+        if (!r.ok) throw new Error(r.error)
+        return r
       },
     })))
 

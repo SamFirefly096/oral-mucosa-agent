@@ -28,7 +28,32 @@ return {
       '.dwf-dropover{position:fixed;left:50%;transform:translateX(-50%);bottom:110px;z-index:9999;display:flex;align-items:center;gap:10px;padding:12px 22px;border:2px dashed #1F6FB2;border-radius:14px;background:rgba(31,111,178,.12);color:#1F6FB2;font-size:14px;font-weight:600;box-shadow:0 8px 30px rgba(0,0,0,.18);pointer-events:auto;user-select:none;backdrop-filter:blur(4px)}' +
       '.dwf-dropover.busy{opacity:.7}' +
       '.dwf-dropover .spin{display:inline-block;animation:dwf-spin 1s linear infinite}.dwf-dropover.hidden{display:none}' +
-      '@keyframes dwf-spin{to{transform:rotate(360deg)}}')
+      '@keyframes dwf-spin{to{transform:rotate(360deg)}}' +
+      '.dwf-dock{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:#777;padding:2px 2px}' +
+      '.dwf-dock-title{font-weight:700;color:#1F6FB2;font-size:12.5px}' +
+      '.dwf-dock-meta{color:#999;white-space:nowrap}' +
+      '.dwf-dock-file{display:inline-block;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#2E8B57;text-decoration:none;font-weight:600}' +
+      '.dwf-dock-file:hover{text-decoration:underline}' +
+      '.dwf-dock .dwf-btn{font-size:11px;padding:2px 8px}' +
+      '.dwf-tblwrap{margin-top:6px;border:1px solid rgba(127,127,127,.25);border-radius:10px;overflow:hidden}' +
+      '.dwf-tbl{width:100%;border-collapse:collapse;font-size:12px;display:block;max-height:280px;overflow:auto}' +
+      '.dwf-tbl thead,.dwf-tbl tbody{display:table;width:100%;table-layout:fixed}' +
+      '.dwf-tbl th{position:sticky;top:0;background:#1F6FB2;color:#fff;font-weight:600;text-align:left;padding:6px 10px;font-size:12px;z-index:1}' +
+      '.dwf-tbl td{padding:5px 10px;border-top:1px solid rgba(127,127,127,.12);vertical-align:middle;word-break:break-all}' +
+      '.dwf-tbl tbody tr:nth-child(odd) td{background:rgba(127,127,127,.05)}' +
+      '.dwf-tbl tbody tr:hover td{background:rgba(31,111,178,.08)}' +
+      '.dwf-tbl th:nth-child(1),.dwf-tbl td:nth-child(1){width:32%}' +
+      '.dwf-tbl th:nth-child(2),.dwf-tbl td:nth-child(2){width:10%}' +
+      '.dwf-tbl th:nth-child(3),.dwf-tbl td:nth-child(3){width:15%}' +
+      '.dwf-tbl th:nth-child(4),.dwf-tbl td:nth-child(4){width:22%}' +
+      '.dwf-tbl th:nth-child(5),.dwf-tbl td:nth-child(5){width:21%}' +
+      '.dwf-tbl-name a{color:#1F6FB2;text-decoration:none;font-weight:600}' +
+      '.dwf-tbl-name a:hover{text-decoration:underline}' +
+      '.dwf-dir{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600}' +
+      '.dwf-dir-in{background:rgba(46,139,87,.14);color:#2E8B57}' +
+      '.dwf-dir-out{background:rgba(31,111,178,.14);color:#1F6FB2}' +
+      '.dwf-tbl-time{color:#999;white-space:nowrap}' +
+      '.dwf-tbl-req{color:#555}.dwf-tbl-sum{color:#777}')
 
     // ---------- 共享上传逻辑 ----------
     async function toB64(file) {
@@ -207,7 +232,7 @@ return {
 
       return h('label', {
         className: 'dwf-up2' + (busy ? ' busy' : '') + (over ? ' over' : ''),
-        title: '上传文档（txt/md/docx/pdf/ppt/pptx，≤90MB），也可将文档文件直接拖入输入区',
+        title: '上传文档（txt/md/docx/pdf/ppt/pptx/xlsx，≤90MB），也可将文档文件直接拖入输入区',
         onDragOver: (e) => { e.preventDefault(); setOver(true) },
         onDragLeave: () => setOver(false),
         onDrop: (e) => {
@@ -221,7 +246,7 @@ return {
         h('input', {
           type: 'file',
           multiple: true,
-          accept: '.txt,.md,.docx,.pdf,.ppt,.pptx',
+          accept: '.txt,.md,.docx,.pdf,.ppt,.pptx,.xlsx',
           style: { display: 'none' },
           onChange: (e) => { onFiles(e.target.files); e.target.value = '' },
         }),
@@ -325,6 +350,81 @@ return {
     slots.inject('tool.view.cordis', () => slots.register(
       { name: 'tool.view.cordis', key: 'self' },
       () => React.createElement(DocPanel),
+    ))
+
+    // ---------- 输入框下方常驻文档条（conversation.composer.dock，始终可见） ----------
+    function DockStrip() {
+      const h = React.createElement
+      const [uploads, setUploads] = React.useState([])
+      const [outputs, setOutputs] = React.useState([])
+      const [expanded, setExpanded] = React.useState(false)
+      const [msg, setMsg] = React.useState('')
+      const [msgOk, setMsgOk] = React.useState(true)
+
+      function refresh() {
+        return host.call('list', { kind: 'all' }).then((r) => {
+          if (r && r.ok) {
+            setUploads((r.items || []).filter((i) => i.kind === 'uploads'))
+            setOutputs((r.items || []).filter((i) => i.kind === 'outputs'))
+          }
+        }).catch((e) => {
+          setMsg(String((e && e.message) || e))
+          setMsgOk(false)
+        })
+      }
+
+      React.useEffect(() => {
+        refresh()
+        const stop = ctx.interval(() => { refresh() }, 10000)
+        return stop
+      }, [])
+
+      const recent = outputs.slice(0, 2).concat(uploads.slice(0, 1))
+      const all = outputs.concat(uploads)
+      return h('div', null,
+        h('div', { className: 'dwf-dock' },
+          h('span', { className: 'dwf-dock-title' }, '📄 文档工作流'),
+          h('span', { className: 'dwf-dock-meta' },
+            uploads.length + ' 上传 · ' + outputs.length + ' 生成'),
+          recent.map((i) =>
+            h('a', { key: i.fileId, className: 'dwf-dock-file', href: i.downloadUrl, download: i.name, title: i.name },
+              '⬇ ' + i.name),
+          ),
+          h('button', { className: 'dwf-btn', onClick: () => setExpanded(!expanded) }, expanded ? '收起 ▲' : '展开 ▾'),
+          h('button', { className: 'dwf-btn', onClick: () => refresh() }, '刷新'),
+          msg ? h('span', { className: msgOk ? 'dwf-msg dwf-ok' : 'dwf-msg' }, msg) : null,
+        ),
+        expanded ? h('div', { className: 'dwf-tblwrap' },
+          h('table', { className: 'dwf-tbl' },
+            h('thead', null,
+              h('tr', null,
+                h('th', null, '文件名'),
+                h('th', null, '方向'),
+                h('th', null, '修改时间'),
+                h('th', null, '用户要求'),
+                h('th', null, '简要修改内容'),
+              )),
+            h('tbody', null,
+              all.map((i) =>
+                h('tr', { key: i.fileId },
+                  h('td', { className: 'dwf-tbl-name' },
+                    h('a', { href: i.downloadUrl, download: i.name, title: i.name }, i.name)),
+                  h('td', null,
+                    h('span', { className: i.kind === 'outputs' ? 'dwf-dir dwf-dir-out' : 'dwf-dir dwf-dir-in' },
+                      i.kind === 'outputs' ? '⬇ 生成' : '⬆ 上传')),
+                  h('td', { className: 'dwf-tbl-time' }, i.mtime || ''),
+                  h('td', { className: 'dwf-tbl-req' }, i.request || '—'),
+                  h('td', { className: 'dwf-tbl-sum' }, i.summary || '—'),
+                )),
+            )),
+          all.length ? null : h('div', { className: 'dwf-empty' }, '暂无文件，拖入文档即可上传'),
+        ) : null,
+      )
+    }
+
+    slots.inject('conversation.composer.dock', () => slots.register(
+      { name: 'conversation.composer.dock', id: 'docf-dock', order: 10 },
+      () => React.createElement(DockStrip),
     ))
   },
 }
