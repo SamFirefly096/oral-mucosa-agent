@@ -35,7 +35,8 @@ return {
       '.dwf-dock-file{display:inline-block;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#2E8B57;text-decoration:none;font-weight:600}' +
       '.dwf-dock-file:hover{text-decoration:underline}' +
       '.dwf-dock .dwf-btn{font-size:11px;padding:2px 8px}' +
-      '.dwf-tblwrap{margin-top:6px;border:1px solid rgba(127,127,127,.25);border-radius:10px;overflow:hidden}' +
+      '.dwf-tblwrap{position:absolute;top:calc(100% + 6px);right:0;width:min(760px,92vw);background:rgba(250,250,250,.97);box-shadow:0 10px 28px rgba(0,0,0,.16);border:1px solid rgba(127,127,127,.25);border-radius:10px;overflow:hidden;z-index:60}' +
+      '.dwf-root{position:relative;width:fit-content;max-width:100%;margin-left:auto}' +
       '.dwf-tbl{width:100%;border-collapse:collapse;font-size:12px;display:block;max-height:280px;overflow:auto}' +
       '.dwf-tbl thead,.dwf-tbl tbody{display:table;width:100%;table-layout:fixed}' +
       '.dwf-tbl th{position:sticky;top:0;background:#1F6FB2;color:#fff;font-weight:600;text-align:left;padding:6px 10px;font-size:12px;z-index:1}' +
@@ -68,7 +69,9 @@ return {
       '.dwf-up2{flex:none;min-width:auto;padding:4px 8px;margin:0 2px}' +
       '.dwf-up2 .dwf-up-txt{display:none}' +
       '.dwf-dock-file{display:none}' +
-      '.dwf-dock{row-gap:4px;column-gap:6px}' +
+      '.dwf-dock{row-gap:4px;column-gap:6px;font-size:11px}' +
+      '.dwf-dock-title{font-size:11.5px}' +
+      '.dwf-root{max-width:100%}' +
       '.dwf-filters select{max-width:128px}' +
       '.dwf-tbl th,.dwf-tbl td{padding:4px 6px}' +
       '}')
@@ -474,7 +477,7 @@ return {
 
       const recent = outputs.slice(0, 2).concat(uploads.slice(0, 1))
       const all = outputs.concat(uploads)
-      return h('div', null,
+      return h('div', { className: 'dwf-root' },
         h('div', { className: 'dwf-dock' },
           h('span', { className: 'dwf-dock-title' }, '📄 文档工作流'),
           h('span', { className: 'dwf-dock-meta' },
@@ -549,8 +552,8 @@ return {
       )
     }
 
-    slots.inject('conversation.composer.dock', () => slots.register(
-      { name: 'conversation.composer.dock', id: 'docf-dock', order: 10 },
+    slots.inject('conversation.input.dock', () => slots.register(
+      { name: 'conversation.input.dock', id: 'docf-dock', order: 30 },
       () => React.createElement(DockStrip),
     ))
   },
