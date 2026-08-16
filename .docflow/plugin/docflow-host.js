@@ -15,32 +15,84 @@ return {
 
     const files = new Map()
     let seq = 0
-    const META_PATH = ROOT + '/meta.json'
-    let meta = {}
-
-    async function loadMeta() {
-      // 主文件缺失/损坏时回退到 .bak（保存时同步写的双副本）
+    const metaByUser = new Map()
+    // ── 多用户隔离 ──
+    // nginx 在 X-Forwarded-User 头携带登录名（dsh=管理员）。会话归属按 cwd：
+    // /home/<用户名>/ 下属于该用户，其余属于管理员（与 dsh-host-apiproxy 补丁一致）。
+    // 管理员沿用 /opt/oral-mucosa-agent/.docflow；普通用户使用 /home/<用户名>/.docflow。
+    // 动态插件（harness RPC）拿不到 HTTP 头：RPC 处理器从 args.user 取（缺省管理员），
+    // 工具从 exec.agent.session.header.cwd 推断。
+    const ADMIN_USER = 'dsh'
+    function normUser(u) {
+      const s = String(u || '').trim()
+      return /^[a-zA-Z0-9_-]{1,32}$/.test(s) ? s : ADMIN_USER
+    }
+    function harnessUser(a) {
+      return normUser(a && a.user)
+    }
+    function userOfCwd(cwd) {
+      if (typeof cwd !== 'string' || !cwd) return ADMIN_USER
+      const m = /^\/home\/([^/]+)\//.exec(cwd)
+      return m ? normUser(m[1]) : ADMIN_USER
+    }
+    function userOfExec(exec) {
       try {
-        const raw = await fs.readText(await fs.resolve(META_PATH))
+        const s = exec && exec.agent && exec.agent.session
+        return userOfCwd(s && s.header && s.header.cwd)
+      } catch (e) {
+        return ADMIN_USER
+      }
+    }
+    function userRoot(user) {
+      return user === ADMIN_USER ? base : '/home/' + user
+    }
+    function docRoot(user) {
+      return userRoot(user) + '/.docflow'
+    }
+    function uploadsOf(user) {
+      return docRoot(user) + '/uploads'
+    }
+    function outputsOf(user) {
+      return docRoot(user) + '/outputs'
+    }
+    function policyOf(user) {
+      return { mode: 'workspace-write', workspaceRoot: userRoot(user) }
+    }
+    function metaOfUser(user) {
+      let m = metaByUser.get(user)
+      if (!m) {
+        m = {}
+        metaByUser.set(user, m)
+      }
+      return m
+    }
+    function fileOf(id, user) {
+      const info = files.get(id)
+      return info && info.user === user ? info : undefined
+    }
+
+    async function loadMeta(user) {
+      // 主文件缺失/损坏时回退到 .bak（保存时同步写的双副本）
+      const p = docRoot(user) + '/meta.json'
+      try {
+        const raw = await fs.readText(await fs.resolve(p))
         if (raw) {
-          meta = JSON.parse(raw) || {}
+          metaByUser.set(user, JSON.parse(raw) || {})
           return
         }
       } catch (e) {}
       try {
-        const raw = await fs.readText(await fs.resolve(META_PATH + '.bak'))
-        if (raw) meta = JSON.parse(raw) || {}
+        const raw = await fs.readText(await fs.resolve(p + '.bak'))
+        if (raw) metaByUser.set(user, JSON.parse(raw) || {})
       } catch (e) {}
     }
-    async function saveMeta() {
+    async function saveMeta(user) {
       try {
-        const body = JSON.stringify(meta)
-        await fs.writeText(await fs.resolve(META_PATH), body, undefined, undefined, POLICY)
-        await fs.writeText(await fs.resolve(META_PATH + '.bak'), body, undefined, undefined, POLICY)
+        const body = JSON.stringify(metaOfUser(user))
+        const p = docRoot(user) + '/meta.json'
+        await fs.writeText(await fs.resolve(p), body, undefined, undefined, policyOf(user))
+        await fs.writeText(await fs.resolve(p + '.bak'), body, undefined, undefined, policyOf(user))
       } catch (e) {}
-    }
-    function metaOf(id, dflt) {
-      return meta[id] || (meta[id] = dflt || {})
     }
     function fmtTime(ts) {
       if (!ts) return ''
@@ -132,8 +184,8 @@ return {
       svg: 'image/svg+xml',
     }
 
-    function pick(info) {
-      const m = meta[info.id] || {}
+    function pick(info, user) {
+      const m = metaOfUser(user)[info.id] || {}
       return {
         fileId: info.id,
         name: info.name,
@@ -150,7 +202,7 @@ return {
       }
     }
 
-    async function runPy(args, stdin) {
+    async function runPy(args, stdin, user) {
       try {
         const spec = shell.resolve({
           command: PY + ' ' + ENGINE + ' ' + args,
@@ -158,7 +210,7 @@ return {
           timeoutMs: 240000,
           stdoutMaxBytes: 64 * 1024 * 1024,
           stdin: stdin,
-          sandboxPolicy: POLICY,
+          sandboxPolicy: policyOf(user),
         })
         const res = await shell.run(spec)
         return res
@@ -167,25 +219,25 @@ return {
       }
     }
     // 把 JSON 数据写入临时文件，返回其路径（绕开 stdin 传递的不确定性）
-    async function writeJsonTemp(payload) {
-      const tmpPath = ROOT + '/tmp/spec_' + newId('t') + '.json'
-      await fs.writeText(await fs.resolve(tmpPath), typeof payload === 'string' ? payload : JSON.stringify(payload), undefined, undefined, POLICY)
+    async function writeJsonTemp(payload, user) {
+      const tmpPath = docRoot(user) + '/tmp/spec_' + newId('t') + '.json'
+      await fs.writeText(await fs.resolve(tmpPath), typeof payload === 'string' ? payload : JSON.stringify(payload), undefined, undefined, policyOf(user))
       return tmpPath
     }
     // 带 spec 文件执行 create/edit：数据落盘后把路径作为最后一个参数
-    async function runPySpec(sub, fmt, outPath, extraPath, payload) {
-      const specPath = await writeJsonTemp(payload)
+    async function runPySpec(sub, fmt, outPath, extraPath, payload, user) {
+      const specPath = await writeJsonTemp(payload, user)
       let args = sub + ' ' + fmt + ' ' + q(outPath)
       if (extraPath) args += ' ' + q(extraPath)
       args += ' ' + q(specPath)
-      return runPy(args)
+      return runPy(args, null, user)
     }
     // 把 JSON 数据写入临时文件，再执行一个引擎命令（参数以文件路径追加）
-    async function runPyJson(sub, payload, extraArgs) {
-      const jsonPath = await writeJsonTemp(payload)
+    async function runPyJson(sub, payload, extraArgs, user) {
+      const jsonPath = await writeJsonTemp(payload, user)
       let args = sub + ' ' + q(jsonPath)
       if (extraArgs) args += ' ' + extraArgs
-      return runPy(args)
+      return runPy(args, null, user)
     }
     // DSH 新版 shell 服务：stdout/stderr 为 CollectedOutput 对象 {text, truncated, spillPath}，
     // 旧版为纯字符串；两种形状都兼容
@@ -207,7 +259,7 @@ return {
       const term = String(args.term || '').trim()
       if (!term) return { ok: false, error: '缺少检索词 term' }
       const retmax = Math.min(Math.max(parseInt(args.maxResults, 10) || 8, 1), 20)
-      const res = await runPy('lit-search ' + q(term) + ' ' + retmax)
+      const res = await runPy('lit-search ' + q(term) + ' ' + retmax, null, ADMIN_USER)
       const j = parseResult(res)
       if (!j || !j.ok) return { ok: false, error: '检索失败: ' + errOf(res) }
       return { ok: true, count: j.count, items: j.items || [] }
@@ -217,7 +269,7 @@ return {
       const query = String(args.query || '').trim()
       if (!query) return { ok: false, error: '缺少查询词 query' }
       const rows = Math.min(Math.max(parseInt(args.maxResults, 10) || 5, 1), 10)
-      const res = await runPy('lit-crossref ' + q(query) + ' ' + rows)
+      const res = await runPy('lit-crossref ' + q(query) + ' ' + rows, null, ADMIN_USER)
       const j = parseResult(res)
       if (!j || !j.ok) return { ok: false, error: 'Crossref 检索失败: ' + errOf(res) }
       return { ok: true, items: j.items || [] }
@@ -226,7 +278,7 @@ return {
     async function handleLitVerify(args) {
       const refs = args.references
       if (!Array.isArray(refs) || !refs.length) return { ok: false, error: '缺少 references 数组' }
-      const res = await runPyJson('lit-verify', refs)
+      const res = await runPyJson('lit-verify', refs, null, ADMIN_USER)
       const j = parseResult(res)
       if (!j || !j.ok) return { ok: false, error: '核查失败: ' + errOf(res) }
       return { ok: true, results: j.results || [] }
@@ -242,16 +294,17 @@ return {
       if (!query) return { ok: false, error: '缺少搜索词 query' }
       const max = Math.min(Math.max(parseInt(args.maxResults, 10) || 5, 1), 20)
       const type = ['photo', 'vector', 'all'].indexOf(args.type) >= 0 ? args.type : 'all'
-      const res = await runPy('image-search ' + q(query) + ' ' + max + ' ' + q(type))
+      const res = await runPy('image-search ' + q(query) + ' ' + max + ' ' + q(type), null, ADMIN_USER)
       const j = parseResult(res)
       if (!j || !j.ok) return { ok: false, error: '图片搜索失败: ' + errOf(res) }
       return { ok: true, items: j.items || [] }
     }
 
     async function handleImageRecognize(args) {
+      const user = harnessUser(args)
       let path = ''
       if (args.fileId) {
-        const info = files.get(args.fileId)
+        const info = fileOf(args.fileId, user)
         if (!info) return { ok: false, error: '文件不存在' }
         path = info.path
       } else if (args.path) {
@@ -259,7 +312,7 @@ return {
       } else {
         return { ok: false, error: '需要 fileId 或 path' }
       }
-      const res = await runPy('image-recognize ' + q(path))
+      const res = await runPy('image-recognize ' + q(path), null, user)
       const j = parseResult(res)
       if (!j || !j.ok) return { ok: false, error: '识别失败: ' + errOf(res) }
       return { ok: true, info: j.info || {}, ocr: j.ocr || '', description: j.description || '', vision_error: j.vision_error || '' }
@@ -268,28 +321,28 @@ return {
     ctx.effect(() => harness.handle('image-search', (a) => handleImageSearch(a)))
     ctx.effect(() => harness.handle('image-recognize', (a) => handleImageRecognize(a)))
 
-    async function ensureDirs() {
+    async function ensureDirs(user) {
       try {
-        const spec = shell.resolve({ command: 'mkdir -p ' + q(UPLOADS) + ' ' + q(OUTPUTS) + ' ' + q(ROOT + '/tmp'), workdir: base, timeoutMs: 30000, sandboxPolicy: POLICY })
+        const spec = shell.resolve({ command: 'mkdir -p ' + q(uploadsOf(user)) + ' ' + q(outputsOf(user)) + ' ' + q(docRoot(user) + '/tmp'), workdir: userRoot(user), timeoutMs: 30000, sandboxPolicy: policyOf(user) })
         await shell.run(spec)
       } catch (e) {}
     }
 
     // DSH 的 fs.stat 不返回 mtime，shell stat 又受沙箱限制；经引擎取磁盘真实修改时间
-    async function dirMtimes(dir) {
+    async function dirMtimes(dir, user) {
       try {
-        const res = await runPy('dir-mtimes ' + q(dir))
+        const res = await runPy('dir-mtimes ' + q(dir), null, user)
         const j = parseResult(res)
         return j && typeof j === 'object' && !Array.isArray(j) ? j : {}
       } catch (e) {
         return {}
       }
     }
-    async function scanDir(dir, kind) {
+    async function scanDir(dir, kind, user) {
       try {
         const target = await fs.resolve(dir)
         const entries = await fs.listDir(target)
-        const mtMap = await dirMtimes(dir)
+        const mtMap = await dirMtimes(dir, user)
         let metaDirty = false
         for (const e of entries) {
           if (e.type !== 'file') continue
@@ -305,48 +358,55 @@ return {
             id: id,
             name: m[2],
             kind: kind,
+            user: user,
             path: full,
             size: e.size || 0,
             format: fmtOf(m[2]),
             createdAt: realMt || Date.now(),
             fileMtime: realMt || Date.now(),
           })
-          if (!meta[id]) {
-            meta[id] = { direction: kind === 'uploads' ? 'upload' : 'output', mtime: fmtTime(realMt || Date.now()), request: '', summary: '' }
+          const um = metaOfUser(user)
+          if (!um[id]) {
+            um[id] = { direction: kind === 'uploads' ? 'upload' : 'output', mtime: fmtTime(realMt || Date.now()), request: '', summary: '' }
             metaDirty = true
-          } else if (realMt && meta[id].mtime !== fmtTime(realMt)) {
+          } else if (realMt && um[id].mtime !== fmtTime(realMt)) {
             // 校正历史错误记录（旧版曾把重启时间写进 meta）
-            meta[id].mtime = fmtTime(realMt)
+            um[id].mtime = fmtTime(realMt)
             metaDirty = true
           }
           // 旧数据迁移：从文件名【分类】前缀推断分类
-          if (!meta[id].category) {
+          if (!um[id].category) {
             const c = catOf(m[2])
             if (c) {
-              meta[id].category = c
+              um[id].category = c
               metaDirty = true
             }
           }
         }
-        if (metaDirty) saveMeta()
+        if (metaDirty) saveMeta(user)
       } catch (e) {}
     }
 
-    function countOf(kind) {
+    function countOf(kind, user) {
       let n = 0
-      files.forEach((f) => { if (f.kind === kind) n++ })
+      files.forEach((f) => { if (f.kind === kind && f.user === user) n++ })
       return n
     }
 
-    ensureDirs().then(() => loadMeta().then(() => Promise.all([scanDir(UPLOADS, 'uploads'), scanDir(OUTPUTS, 'outputs')]))).catch(() => {})
+    ensureDirs(ADMIN_USER).then(() => loadMeta(ADMIN_USER).then(() => Promise.all([scanDir(UPLOADS, 'uploads', ADMIN_USER), scanDir(OUTPUTS, 'outputs', ADMIN_USER)]))).catch(() => {})
 
     ctx.effect(() => webServer.register({
       kind: 'prefix',
       path: '/dsh-docflow/download',
       handler: async (req, res) => {
         try {
+          let user = ADMIN_USER
+          try {
+            const v = req && req.headers && req.headers['x-forwarded-user']
+            user = normUser(typeof v === 'string' ? v : '')
+          } catch (e) {}
           const tail = (req.url || '').split('?')[0].split('/').pop() || ''
-          const info = files.get(tail)
+          const info = fileOf(tail, user)
           if (!info) {
             res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
             res.end('文件不存在或已过期')
@@ -377,10 +437,16 @@ return {
       },
     }))
 
-    async function handleStatus() {
-      await ensureDirs()
-      await scanDir(UPLOADS, 'uploads')
-      await scanDir(OUTPUTS, 'outputs')
+    async function userInit(user) {
+      await ensureDirs(user)
+      await loadMeta(user)
+    }
+
+    async function handleStatus(args) {
+      const user = harnessUser(args)
+      await userInit(user)
+      await scanDir(uploadsOf(user), 'uploads', user)
+      await scanDir(outputsOf(user), 'outputs', user)
       let engineReady = false
       try {
         const st = await fs.stat(await fs.resolve(ENGINE))
@@ -389,13 +455,16 @@ return {
       return {
         ok: true,
         engineReady: engineReady,
-        root: ROOT,
+        root: docRoot(user),
+        user: user,
         downloadBase: urlOf(''),
-        counts: { uploads: countOf('uploads'), outputs: countOf('outputs') },
+        counts: { uploads: countOf('uploads', user), outputs: countOf('outputs', user) },
       }
     }
 
     async function handleUpload(args) {
+      const user = harnessUser(args)
+      await userInit(user)
       const name0 = sanitize(args && args.name)
       const cat = String((args && args.category) || '').trim() || catOf(name0)
       const name = applyCat(name0, cat)
@@ -403,31 +472,31 @@ return {
       if (!b64) return { ok: false, error: '未收到文件数据' }
       if (b64.length > UPLOAD_MAX_B64) return { ok: false, error: '文件过大（超过约 90MB）' }
       const id = newId('u')
-      const path = UPLOADS + '/' + id + '__' + name
+      const path = uploadsOf(user) + '/' + id + '__' + name
       // 绕开 stdin 传递的不确定性：base64 先落盘为 .b64 文件，再由 Python 解码
-      const b64Path = ROOT + '/tmp/' + id + '.b64'
+      const b64Path = docRoot(user) + '/tmp/' + id + '.b64'
       try {
-        await fs.writeText(await fs.resolve(b64Path), b64, undefined, undefined, POLICY)
+        await fs.writeText(await fs.resolve(b64Path), b64, undefined, undefined, policyOf(user))
       } catch (e) {
         return { ok: false, error: '写入临时文件失败: ' + String((e && e.message) || e) }
       }
-      const res = await runPy('decode-file ' + q(b64Path) + ' ' + q(path))
+      const res = await runPy('decode-file ' + q(b64Path) + ' ' + q(path), null, user)
       if (res.exitCode !== 0) {
         return { ok: false, error: '保存失败: ' + errOf(res) }
       }
-      const info = { id: id, name: name, kind: 'uploads', path: path, size: 0, format: fmtOf(name), createdAt: Date.now(), fileMtime: Date.now() }
+      const info = { id: id, name: name, kind: 'uploads', user: user, path: path, size: 0, format: fmtOf(name), createdAt: Date.now(), fileMtime: Date.now() }
       try {
         const st = await fs.stat(await fs.resolve(path))
         info.size = (st && st.size) || 0
       } catch (e) {}
       files.set(id, info)
-      meta[id] = { direction: 'upload', mtime: fmtTime(Date.now()), category: catOf(name), request: (args && args.request) || '', summary: (args && args.summary) || '上传文件' }
-      saveMeta()
+      metaOfUser(user)[id] = { direction: 'upload', mtime: fmtTime(Date.now()), category: catOf(name), request: (args && args.request) || '', summary: (args && args.summary) || '上传文件' }
+      saveMeta(user)
       let text = ''
       let chars = 0
       let detail = null
       if (info.format !== 'file' && info.format !== 'ppt') {
-        const ex = await runPy('extract ' + q(path))
+        const ex = await runPy('extract ' + q(path), null, user)
         const j = parseResult(ex)
         if (j && j.ok) {
           text = j.text || ''
@@ -435,20 +504,21 @@ return {
           detail = { pages: j.pages || 0, slides: j.slides || 0, paragraphs: j.paragraphs || 0, tables: j.tables || 0 }
         }
       }
-      return { ok: true, file: pick(info), textPreview: text.slice(0, 2000), chars: chars, detail: detail }
+      return { ok: true, file: pick(info, user), textPreview: text.slice(0, 2000), chars: chars, detail: detail }
     }
 
     async function handleList(args) {
-      await ensureDirs()
+      const user = harnessUser(args)
+      await userInit(user)
       const kind = (args && args.kind) || 'all'
-      if (kind === 'uploads' || kind === 'all') await scanDir(UPLOADS, 'uploads')
-      if (kind === 'outputs' || kind === 'all') await scanDir(OUTPUTS, 'outputs')
+      if (kind === 'uploads' || kind === 'all') await scanDir(uploadsOf(user), 'uploads', user)
+      if (kind === 'outputs' || kind === 'all') await scanDir(outputsOf(user), 'outputs', user)
       const catF = String((args && args.category) || '').trim()
       const fmtF = String((args && args.format) || '').toLowerCase()
       const all = []
-      files.forEach((f) => all.push(f))
+      files.forEach((f) => { if (f.user === user) all.push(f) })
       all.sort((a, b) => b.createdAt - a.createdAt)
-      const picked = all.map(pick)
+      const picked = all.map((f) => pick(f, user))
       let items = picked
       if (kind !== 'all') items = items.filter((f) => f.kind === kind)
       if (catF) items = items.filter((f) => normCat(f.category) === catF)
@@ -460,14 +530,15 @@ return {
         if (categories.indexOf(c) < 0) categories.push(c)
         if (formats.indexOf(f.format) < 0) formats.push(f.format)
       })
-      return { ok: true, items: items, categories: categories, formats: formats }
+      return { ok: true, items: items, categories: categories, formats: formats, user: user }
     }
 
     async function handleParse(args) {
-      const info = files.get(args && args.fileId)
+      const user = harnessUser(args)
+      const info = fileOf(args && args.fileId, user)
       if (!info) return { ok: false, error: '文件不存在' }
       if (info.format === 'ppt') return { ok: false, error: '旧版 .ppt 无法解析，请另存为 .pptx 后重新上传' }
-      const ex = await runPy('extract ' + q(info.path))
+      const ex = await runPy('extract ' + q(info.path), null, user)
       const j = parseResult(ex)
       if (!j || !j.ok) return { ok: false, error: '解析失败: ' + errOf(ex) }
       const maxChars = (args && args.maxChars) || 50000
@@ -482,22 +553,25 @@ return {
     }
 
     async function handleRemove(args) {
-      const info = files.get(args && args.fileId)
+      const user = harnessUser(args)
+      const info = fileOf(args && args.fileId, user)
       if (!info) return { ok: false, error: '文件不存在' }
       files.delete(info.id)
-      if (meta[info.id]) {
-        delete meta[info.id]
-        saveMeta()
+      const um = metaOfUser(user)
+      if (um[info.id]) {
+        delete um[info.id]
+        saveMeta(user)
       }
       try {
-        const spec = shell.resolve({ command: 'rm -f ' + q(info.path), workdir: base, timeoutMs: 30000, sandboxPolicy: POLICY })
+        const spec = shell.resolve({ command: 'rm -f ' + q(info.path), workdir: userRoot(user), timeoutMs: 30000, sandboxPolicy: policyOf(user) })
         await shell.run(spec)
       } catch (e) {}
       return { ok: true }
     }
 
     async function handleUrl(args) {
-      const info = files.get(args && args.fileId)
+      const user = harnessUser(args)
+      const info = fileOf(args && args.fileId, user)
       if (!info) return { ok: false, error: '文件不存在' }
       return { ok: true, url: urlOf(info.id), name: info.name }
     }
@@ -509,14 +583,15 @@ return {
     ctx.effect(() => harness.handle('remove', (a) => handleRemove(a)))
     ctx.effect(() => harness.handle('download-url', (a) => handleUrl(a)))
 
-    async function doCreate(args) {
+    async function doCreate(args, user) {
+      await userInit(user)
       const fmt = String(args.format || 'docx').toLowerCase()
       if (fmt === 'ppt') return { ok: false, error: '不支持旧版 .ppt 输出，请使用 pptx' }
       const cat = String((args && args.category) || '').trim()
       const baseName = applyCat(args.outputName || ((args.title || '文档') + '.' + fmt), cat)
       const finalName = /\.(docx|pptx|pdf|md|txt|xlsx)$/.test(baseName) ? baseName : baseName + '.' + fmt
       const id = newId('o')
-      const path = OUTPUTS + '/' + id + '__' + finalName
+      const path = outputsOf(user) + '/' + id + '__' + finalName
       const res = await runPySpec('create', fmt, path, null, {
         title: args.title || '',
         subtitle: args.subtitle || '',
@@ -526,65 +601,66 @@ return {
         style: args.style,
         content: args.content || '',
         sections: args.sections,
-      })
+      }, user)
       if (res.exitCode !== 0) {
         return { ok: false, error: '生成失败: ' + errOf(res, 500) }
       }
-      const info = { id: id, name: finalName, kind: 'outputs', path: path, size: 0, format: fmt, createdAt: Date.now(), fileMtime: Date.now() }
+      const info = { id: id, name: finalName, kind: 'outputs', user: user, path: path, size: 0, format: fmt, createdAt: Date.now(), fileMtime: Date.now() }
       try {
         const st = await fs.stat(await fs.resolve(path))
         info.size = (st && st.size) || 0
       } catch (e) {}
       files.set(id, info)
-      meta[id] = {
+      metaOfUser(user)[id] = {
         direction: 'output',
         mtime: fmtTime(Date.now()),
         category: catOf(finalName),
         request: (args && args.request) || '',
         summary: (args && args.summary) || '生成 ' + fmt.toUpperCase() + ' 文档',
       }
-      saveMeta()
+      saveMeta(user)
       return {
         ok: true,
         value: { fileId: id, fileName: finalName, format: fmt, size: info.size, downloadUrl: urlOf(id), message: '生成成功' },
       }
     }
 
-    async function doEdit(args) {
-      const info = files.get(args && args.sourceFileId)
+    async function doEdit(args, user) {
+      const info = fileOf(args && args.sourceFileId, user)
       if (!info) return { ok: false, error: '找不到源文件 ' + String(args && args.sourceFileId) + '，请先用 docflow_list_documents 查看可用文件' }
       let fmt = String(args.format || info.format).toLowerCase()
       if (fmt === 'markdown') fmt = 'md'
       if (fmt === 'ppt') return { ok: false, error: '旧版 .ppt 无法编辑，请另存为 .pptx 后重新上传' }
       if (['docx', 'pptx', 'pdf', 'md', 'txt', 'xlsx'].indexOf(fmt) < 0) return { ok: false, error: '不支持的格式: ' + fmt }
-      const srcCat = (meta[info.id] && meta[info.id].category) || ''
+      const um = metaOfUser(user)
+      const srcCat = (um[info.id] && um[info.id].category) || ''
       const cat = (args && args.category) ? String(args.category).trim() : srcCat
       const base = stripCat(String(info.name)).replace(/\.[^.]+$/, '') || '文档'
       const outName = applyCat(args.outputName || (base + '_修改.' + fmt), cat)
       const finalName = /\.(docx|pptx|pdf|md|txt)$/.test(outName) ? outName : outName + '.' + fmt
       const id = newId('o')
-      const path = OUTPUTS + '/' + id + '__' + finalName
+      const path = outputsOf(user) + '/' + id + '__' + finalName
       const spec = { theme: 'blue', ops: args.ops || [] }
       // 引擎 edit 参数顺序：edit <fmt> <源文件> <输出> [spec]
-      const specPath = await writeJsonTemp(spec)
-      const res = await runPy('edit ' + fmt + ' ' + q(info.path) + ' ' + q(path) + ' ' + q(specPath))
+      const specPath = await writeJsonTemp(spec, user)
+      const res = await runPy('edit ' + fmt + ' ' + q(info.path) + ' ' + q(path) + ' ' + q(specPath), null, user)
       if (res.exitCode !== 0) {
         return { ok: false, error: '修改失败: ' + errOf(res, 500) }
       }
-      const nfo = { id: id, name: finalName, kind: 'outputs', path: path, size: 0, format: fmt, createdAt: Date.now(), fileMtime: Date.now() }
+      const nfo = { id: id, name: finalName, kind: 'outputs', user: user, path: path, size: 0, format: fmt, createdAt: Date.now(), fileMtime: Date.now() }
       try {
         const st = await fs.stat(await fs.resolve(path))
         nfo.size = (st && st.size) || 0
       } catch (e) {}
       files.set(id, nfo)
-      meta[id] = {
+      um[id] = {
         direction: 'output',
         mtime: fmtTime(Date.now()),
         category: catOf(finalName),
         request: (args && args.request) || '',
         summary: (args && args.summary) || opsSummary(args.ops),
       }
-      saveMeta()
+      saveMeta(user)
       return {
         ok: true,
         value: { fileId: id, fileName: finalName, format: fmt, size: nfo.size, downloadUrl: urlOf(id), message: '修改成功' },
@@ -626,8 +702,8 @@ return {
           return [{ type: 'text', text: '已生成 ' + String(value.format || '').toUpperCase() + ' 文档「' + value.fileName + '」（' + kb(value.size) + '）。\\n下载：' + value.downloadUrl }]
         },
       },
-      async execute(args) {
-        const r = await doCreate(args)
+      async execute(args, exec) {
+        const r = await doCreate(args, userOfExec(exec))
         if (!r.ok) throw new Error(r.error)
         return r.value
       },
@@ -666,8 +742,8 @@ return {
           return [{ type: 'text', text: '已修改并生成新文档「' + value.fileName + '」（' + kb(value.size) + '）。\\n下载：' + value.downloadUrl }]
         },
       },
-      async execute(args) {
-        const r = await doEdit(args)
+      async execute(args, exec) {
+        const r = await doEdit(args, userOfExec(exec))
         if (!r.ok) throw new Error(r.error)
         return r.value
       },
@@ -685,12 +761,12 @@ return {
         schema: { type: 'object', additionalProperties: true, properties: { items: { type: 'array', items: { type: 'json' } }, categories: { type: 'array', items: { type: 'string' } }, formats: { type: 'array', items: { type: 'string' } } } },
         render(args, value) {
           const items = value.items || []
-          const lines = items.map((i) => (i.kind === 'outputs' ? '[生成] ' : '[上传] ') + (i.category ? '[' + i.category + '] ' : '') + i.name + ' (' + i.format + ', ' + kb(i.size) + ')\\n  下载: ' + i.downloadUrl)
+          const lines = items.map((i) => (i.kind === 'outputs' ? '[生成] ' : '[上传] ') + i.name + ' (' + i.format + ', ' + kb(i.size) + ')\\n  下载: ' + i.downloadUrl)
           return [{ type: 'text', text: '共 ' + items.length + ' 个文件：\\n' + (lines.join('\\n') || '（空）') }]
         },
       },
-      async execute(args) {
-        const r = await handleList(args || {})
+      async execute(args, exec) {
+        const r = await handleList(Object.assign({}, args || {}, { user: userOfExec(exec) }))
         if (!r.ok) throw new Error(r.error)
         return { items: r.items, categories: r.categories, formats: r.formats }
       },
@@ -719,8 +795,8 @@ return {
           return [{ type: 'text', text: '「' + value.name + '」共 ' + value.chars + ' 字' + (value.detail ? '（' + JSON.stringify(value.detail) + '）' : '') + '，内容见调用结果。' }]
         },
       },
-      async execute(args) {
-        const r = await handleParse(args)
+      async execute(args, exec) {
+        const r = await handleParse(Object.assign({}, args || {}, { user: userOfExec(exec) }))
         if (!r.ok) throw new Error(r.error)
         return { fileId: r.fileId, name: r.name, text: r.text, chars: r.chars, detail: r.detail }
       },
@@ -741,17 +817,18 @@ return {
           return [{ type: 'text', text: '已转换为 ' + String(value.format || '').toUpperCase() + '：「' + value.fileName + '」（' + kb(value.size) + '）。\\n下载：' + value.downloadUrl }]
         },
       },
-      async execute(args) {
-        const info = files.get(args && args.fileId)
+      async execute(args, exec) {
+        const user = userOfExec(exec)
+        const info = fileOf(args && args.fileId, user)
         if (!info) throw new Error('找不到文件 ' + String(args && args.fileId) + '，请先用 docflow_list_documents 查看')
         const fmt = String(args.format || '').toLowerCase()
         if (['docx', 'pptx', 'pdf'].indexOf(fmt) < 0) throw new Error('目标格式仅支持 docx/pptx/pdf')
         if (info.format === 'ppt') throw new Error('旧版 .ppt 无法读取，请另存为 .pptx 后重新上传')
-        const ex = await runPy('extract ' + q(info.path))
+        const ex = await runPy('extract ' + q(info.path), null, user)
         const j = parseResult(ex)
         if (!j || !j.ok) throw new Error('无法读取源文件内容: ' + errOf(ex, 300))
         const base = stripCat(String(info.name)).replace(/\.[^.]+$/, '') || '文档'
-        const srcCat = (meta[info.id] && meta[info.id].category) || ''
+        const srcCat = (metaOfUser(user)[info.id] && metaOfUser(user)[info.id].category) || ''
         const createArgs = {
           format: fmt,
           title: base,
@@ -759,7 +836,7 @@ return {
           outputName: args.outputName,
           category: srcCat,
         }
-        const r = await doCreate(createArgs)
+        const r = await doCreate(createArgs, user)
         if (!r.ok) throw new Error(r.error)
         return r.value
       },
@@ -921,8 +998,8 @@ return {
           return [{ type: 'text', text: lines.join('\n') }]
         },
       },
-      async execute(args) {
-        const r = await handleImageRecognize(args)
+      async execute(args, exec) {
+        const r = await handleImageRecognize(Object.assign({}, args || {}, { user: userOfExec(exec) }))
         if (!r.ok) throw new Error(r.error)
         return r
       },

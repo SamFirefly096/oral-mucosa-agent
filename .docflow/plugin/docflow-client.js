@@ -42,11 +42,14 @@ return {
       '.dwf-tbl td{padding:5px 10px;border-top:1px solid rgba(127,127,127,.12);vertical-align:middle;word-break:break-all}' +
       '.dwf-tbl tbody tr:nth-child(odd) td{background:rgba(127,127,127,.05)}' +
       '.dwf-tbl tbody tr:hover td{background:rgba(31,111,178,.08)}' +
-      '.dwf-tbl th:nth-child(1),.dwf-tbl td:nth-child(1){width:32%}' +
-      '.dwf-tbl th:nth-child(2),.dwf-tbl td:nth-child(2){width:10%}' +
-      '.dwf-tbl th:nth-child(3),.dwf-tbl td:nth-child(3){width:15%}' +
-      '.dwf-tbl th:nth-child(4),.dwf-tbl td:nth-child(4){width:22%}' +
-      '.dwf-tbl th:nth-child(5),.dwf-tbl td:nth-child(5){width:21%}' +
+      '.dwf-tbl th:nth-child(1),.dwf-tbl td:nth-child(1){width:30%}' +
+      '.dwf-tbl th:nth-child(2),.dwf-tbl td:nth-child(2){width:9%}' +
+      '.dwf-tbl th:nth-child(3),.dwf-tbl td:nth-child(3){width:14%}' +
+      '.dwf-tbl th:nth-child(4),.dwf-tbl td:nth-child(4){width:19%}' +
+      '.dwf-tbl th:nth-child(5),.dwf-tbl td:nth-child(5){width:19%}' +
+      '.dwf-tbl th:nth-child(6),.dwf-tbl td:nth-child(6){width:9%}' +
+      '.dwf-tbl-del{color:#C0392B;border-color:rgba(192,57,43,.45)}' +
+      '.dwf-tbl-del:hover{background:rgba(192,57,43,.1)}' +
       '.dwf-tbl-name a{color:#1F6FB2;text-decoration:none;font-weight:600}' +
       '.dwf-tbl-name a:hover{text-decoration:underline}' +
       '.dwf-dir{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600}' +
@@ -305,6 +308,7 @@ return {
       }, [catFilter, fmtFilter])
 
       async function onRemove(id) {
+        if (!window.confirm('确定删除该文件？删除后不可恢复。')) return
         try { await host.call('remove', { fileId: id }) } catch (e) {}
         await refresh()
       }
@@ -339,6 +343,7 @@ return {
           h('span', { className: 'dwf-name', title: i.name }, String(i.name || '').replace(/^【.+?】/, '')),
           h('span', { className: 'dwf-size' }, kb(i.size)),
           h('a', { className: 'dwf-btn dwf-dl', href: i.downloadUrl, download: i.name }, '下载'),
+          h('button', { className: 'dwf-btn dwf-tbl-del', onClick: () => onRemove(i.fileId) }, '删除'),
         ))
 
       return h('div', { className: 'dwf' },
@@ -406,6 +411,17 @@ return {
         return stop
       }, [catFilter, fmtFilter])
 
+      async function onRemove(id) {
+        if (!window.confirm('确定删除该文件？删除后不可恢复。')) return
+        try {
+          await host.call('remove', { fileId: id })
+          await refresh()
+        } catch (e) {
+          setMsg(String((e && e.message) || e))
+          setMsgOk(false)
+        }
+      }
+
       const recent = outputs.slice(0, 2).concat(uploads.slice(0, 1))
       const all = outputs.concat(uploads)
       return h('div', null,
@@ -440,6 +456,7 @@ return {
                 h('th', null, '修改时间'),
                 h('th', null, '用户要求'),
                 h('th', null, '简要修改内容'),
+                h('th', null, '操作'),
               )),
             h('tbody', null,
               all.map((i) =>
@@ -454,6 +471,8 @@ return {
                   h('td', { className: 'dwf-tbl-time' }, i.mtime || ''),
                   h('td', { className: 'dwf-tbl-req' }, i.request || '—'),
                   h('td', { className: 'dwf-tbl-sum' }, i.summary || '—'),
+                  h('td', null,
+                    h('button', { className: 'dwf-btn dwf-tbl-del', onClick: () => onRemove(i.fileId) }, '删除')),
                 )),
             )),
           all.length ? null : h('div', { className: 'dwf-empty' }, '暂无文件，拖入文档即可上传'),
