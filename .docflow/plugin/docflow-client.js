@@ -65,6 +65,7 @@ return {
       '.dwf-tbl input[type=checkbox]{width:14px;height:14px;cursor:pointer;vertical-align:middle;accent-color:#1F6FB2}' +
       '.dwf-selbar{display:flex;gap:10px;align-items:center;margin:6px 10px;flex-wrap:wrap}' +
       '.dwf-selbar .dwf-selinfo{font-size:12px;color:#777}' +
+      '.dwf-tblbar{display:none}' +
       '@media (max-width:640px){' +
       '.dwf-up2{flex:none;min-width:auto;padding:4px 8px;margin:0 2px}' +
       '.dwf-up2 .dwf-up-txt{display:none}' +
@@ -74,6 +75,20 @@ return {
       '.dwf-root{max-width:100%}' +
       '.dwf-filters select{max-width:128px}' +
       '.dwf-tbl th,.dwf-tbl td{padding:4px 6px}' +
+      '.dwf-tblwrap{position:fixed;left:0;right:0;top:0;bottom:0;width:100%;height:100dvh;border:none;border-radius:0;background:#fafafa;z-index:99999;overflow:hidden;display:flex;flex-direction:column}' +
+      '.dwf-tblbar{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:#1F6FB2;color:#fff;font-size:15px;font-weight:700;flex:none}' +
+      '.dwf-tblbar .dwf-btn{color:#fff;border-color:rgba(255,255,255,.6)}' +
+      '.dwf-tblbar .dwf-btn:hover{background:rgba(255,255,255,.15)}' +
+      '.dwf-filters{margin:8px 10px 4px}' +
+      '.dwf-tbl{max-height:none;flex:1;overflow:auto}' +
+      '.dwf-tbl th:nth-child(1),.dwf-tbl td:nth-child(1){width:42%}' +
+      '.dwf-tbl th:nth-child(2),.dwf-tbl td:nth-child(2){width:12%}' +
+      '.dwf-tbl th:nth-child(3),.dwf-tbl td:nth-child(3){width:18%}' +
+      '.dwf-tbl th:nth-child(4),.dwf-tbl td:nth-child(4){display:none}' +
+      '.dwf-tbl th:nth-child(5),.dwf-tbl td:nth-child(5){display:none}' +
+      '.dwf-tbl th:nth-child(6),.dwf-tbl td:nth-child(6){width:28%}' +
+      '.dwf-tbl-name a{word-break:break-all}' +
+      '.dwf-selbar{margin:6px 10px}' +
       '}')
 
     // ---------- 共享上传逻辑 ----------
@@ -234,50 +249,8 @@ return {
       (props) => React.createElement(DropOverlay, props),
     ))
 
-    // ---------- 输入区左侧上传按钮（支持拖放） ----------
-    function UploadEntry(props) {
-      const h = React.createElement
-      const [busy, setBusy] = React.useState(false)
-      const [note, setNote] = React.useState('')
-      const [over, setOver] = React.useState(false)
-
-      async function onFiles(fileList) {
-        if (!fileList || !fileList.length) return
-        setBusy(true)
-        setNote('')
-        const r = await uploadFiles(fileList, props && props.inputActions)
-        setBusy(false)
-        if (r.done.length) setNote('✓ ' + r.done.length)
-        if (r.failed) setNote('⚠ ' + r.failed.slice(0, 50))
-      }
-
-      return h('label', {
-        className: 'dwf-up2' + (busy ? ' busy' : '') + (over ? ' over' : ''),
-        title: '上传文档（txt/md/docx/pdf/ppt/pptx/xlsx，≤90MB），也可将文档文件直接拖入输入区',
-        onDragOver: (e) => { e.preventDefault(); setOver(true) },
-        onDragLeave: () => setOver(false),
-        onDrop: (e) => {
-          e.preventDefault()
-          setOver(false)
-          onFiles(e.dataTransfer && e.dataTransfer.files)
-        },
-      },
-        busy ? h('span', { className: 'dwf-up-txt' }, '上传中…') : h('span', { className: 'dwf-up-txt' }, '📎 文档'),
-        note ? h('span', { className: 'dwf-up-note' }, note) : null,
-        h('input', {
-          type: 'file',
-          multiple: true,
-          accept: '.txt,.md,.docx,.pdf,.ppt,.pptx,.xlsx',
-          style: { display: 'none' },
-          onChange: (e) => { onFiles(e.target.files); e.target.value = '' },
-        }),
-      )
-    }
-
-    slots.inject('conversation.input.left', () => slots.register(
-      { name: 'conversation.input.left', id: 'docf-upload', order: 5 },
-      (props) => React.createElement(UploadEntry, props),
-    ))
+    // 上传按钮已并入输入框右上角的文档工作流条（conversation.input.dock），
+    // 不再占用输入行左侧槽位（移动端曾与模型选择等控件互相遮挡）。
 
     // ---------- run 卡片面板：文件列表 + 下载 ----------
     function DocPanel() {
@@ -393,7 +366,7 @@ return {
       () => React.createElement(DocPanel),
     ))
 
-    // ---------- 输入框下方常驻文档条（conversation.composer.dock，始终可见） ----------
+    // ---------- 输入框右上角常驻文档条（conversation.input.dock） ----------
     function DockStrip() {
       const h = React.createElement
       const [uploads, setUploads] = React.useState([])
@@ -405,6 +378,16 @@ return {
       const [fmtFilter, setFmtFilter] = React.useState('')
       const [categories, setCategories] = React.useState([])
       const [formats, setFormats] = React.useState([])
+      const [upBusy, setUpBusy] = React.useState(false)
+
+      function onFiles(fileList) {
+        if (!fileList || !fileList.length) return
+        setUpBusy(true)
+        return uploadFiles(fileList, null).then(() => {
+          setUpBusy(false)
+          return refresh()
+        })
+      }
 
       function refresh() {
         return host.call('list', { kind: 'all', category: catFilter, format: fmtFilter }).then((r) => {
@@ -480,6 +463,19 @@ return {
       return h('div', { className: 'dwf-root' },
         h('div', { className: 'dwf-dock' },
           h('span', { className: 'dwf-dock-title' }, '📄 文档工作流'),
+          h('label', {
+            className: 'dwf-up2' + (upBusy ? ' busy' : ''),
+            title: '上传文档（txt/md/docx/pdf/ppt/pptx/xlsx，≤90MB），也可将文档文件直接拖入输入区',
+          },
+            upBusy ? h('span', { className: 'dwf-up-txt' }, '上传中…') : h('span', { className: 'dwf-up-txt' }, '📎 上传'),
+            h('input', {
+              type: 'file',
+              multiple: true,
+              accept: '.txt,.md,.docx,.pdf,.ppt,.pptx,.xlsx',
+              style: { display: 'none' },
+              onChange: (e) => { onFiles(e.target.files); e.target.value = '' },
+            }),
+          ),
           h('span', { className: 'dwf-dock-meta' },
             uploads.length + ' 上传 · ' + outputs.length + ' 生成'),
           recent.map((i) =>
@@ -491,6 +487,10 @@ return {
           msg ? h('span', { className: msgOk ? 'dwf-msg dwf-ok' : 'dwf-msg' }, msg) : null,
         ),
         expanded ? h('div', { className: 'dwf-tblwrap' },
+          h('div', { className: 'dwf-tblbar' },
+            h('span', { className: 'dwf-tblbar-title' }, '📄 文档工作流'),
+            h('button', { className: 'dwf-btn dwf-tblbar-close', onClick: () => setExpanded(false) }, '收起 ✕'),
+          ),
           h('div', { className: 'dwf-filters' },
             h('select', { value: catFilter, onChange: (e) => setCatFilter(e.target.value) },
               h('option', { value: '' }, '分类：全部'),
