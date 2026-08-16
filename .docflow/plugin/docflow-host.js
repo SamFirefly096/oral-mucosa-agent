@@ -152,6 +152,22 @@ return {
     function normCat(c) {
       return c || '未分类'
     }
+    // 新建文档自动分类：按标题/正文关键词推断（无显式分类且文件名无【】前缀时使用）
+    function autoCat(text) {
+      const s = String(text || '')
+      const rules = [
+        ['命理分析', /合婚|运势|命理|八字|四柱|生肖|风水|解梦|紫微|六爻|起名|择日|占卜/],
+        ['科研申报书', /申报书|课题|立项|伦理|标书/],
+        ['论文', /论文|文献|投稿|SCI|综述/],
+        ['测试', /测试|验证|试用|联调/],
+        ['DSH教程', /DSH|教程|部署|使用说明|安装指南|指南|手册/],
+        ['项目演示', /演示|汇报|介绍|发布/],
+      ]
+      for (const [cat, re] of rules) {
+        if (re.test(s)) return cat
+      }
+      return ''
+    }
     function newId(kind) { return kind + '_' + Date.now().toString(36) + '_' + (seq++).toString(36) }
     // 下载地址用相对路径：浏览器会按当前页面 origin 解析，
     // 用户通过任意地址（127.0.0.1 / 服务器IP / 域名 / 端口转发）访问 GUI 均可下载
@@ -574,6 +590,28 @@ return {
       return { ok: true, removed: removed }
     }
 
+    async function handleSetCategory(args) {
+      const user = harnessUser(args)
+      const info = fileOf(args && args.fileId, user)
+      if (!info) return { ok: false, error: '文件不存在' }
+      const cat = String((args && args.category) || '').trim()
+      const baseName = stripCat(String(info.name))
+      const newName = cat ? '【' + sanitize(cat) + '】' + baseName : baseName
+      const dir = info.kind === 'uploads' ? uploadsOf(user) : outputsOf(user)
+      const newPath = dir + '/' + info.id + '__' + newName
+      if (newPath !== info.path) {
+        try {
+          const spec = shell.resolve({ command: 'mv ' + q(info.path) + ' ' + q(newPath), workdir: userRoot(user), timeoutMs: 30000, sandboxPolicy: policyOf(user) })
+          await shell.run(spec)
+        } catch (e) {}
+      }
+      info.name = newName
+      info.path = newPath
+      metaOfUser(user)[info.id].category = cat
+      saveMeta(user)
+      return { ok: true, file: pick(info, user) }
+    }
+
     async function handleUrl(args) {
       const user = harnessUser(args)
       const info = fileOf(args && args.fileId, user)
@@ -586,13 +624,18 @@ return {
     ctx.effect(() => harness.handle('list', (a) => handleList(a)))
     ctx.effect(() => harness.handle('parse', (a) => handleParse(a)))
     ctx.effect(() => harness.handle('remove', (a) => handleRemove(a)))
+    ctx.effect(() => harness.handle('set-category', (a) => handleSetCategory(a)))
     ctx.effect(() => harness.handle('download-url', (a) => handleUrl(a)))
 
     async function doCreate(args, user) {
       await userInit(user)
       const fmt = String(args.format || 'docx').toLowerCase()
       if (fmt === 'ppt') return { ok: false, error: '不支持旧版 .ppt 输出，请使用 pptx' }
-      const cat = String((args && args.category) || '').trim()
+      let cat = String((args && args.category) || '').trim()
+      if (!cat) {
+        // 自动分类：标题 + 正文前 800 字关键词推断
+        cat = autoCat(String((args && args.title) || '') + '\n' + String((args && args.content) || '').slice(0, 800))
+      }
       const baseName = applyCat(args.outputName || ((args.title || '文档') + '.' + fmt), cat)
       const finalName = /\.(docx|pptx|pdf|md|txt|xlsx)$/.test(baseName) ? baseName : baseName + '.' + fmt
       const id = newId('o')
@@ -639,8 +682,9 @@ return {
       if (['docx', 'pptx', 'pdf', 'md', 'txt', 'xlsx'].indexOf(fmt) < 0) return { ok: false, error: '不支持的格式: ' + fmt }
       const um = metaOfUser(user)
       const srcCat = (um[info.id] && um[info.id].category) || ''
-      const cat = (args && args.category) ? String(args.category).trim() : srcCat
       const base = stripCat(String(info.name)).replace(/\.[^.]+$/, '') || '文档'
+      let cat = (args && args.category) ? String(args.category).trim() : srcCat
+      if (!cat) cat = autoCat(base)
       const outName = applyCat(args.outputName || (base + '_修改.' + fmt), cat)
       const finalName = /\.(docx|pptx|pdf|md|txt)$/.test(outName) ? outName : outName + '.' + fmt
       const id = newId('o')

@@ -33,10 +33,33 @@ import base64
 import re
 import time
 import datetime
+import math
 
 
 # 多用户路径栅栏根目录（None=管理员，不限路径；字符串=普通用户根，越界即拒绝）
 FENCE_ROOT = None
+
+
+def _wrap_lines(text, width_in, size):
+    """按实际字符宽度估算文本在给定宽度（英寸）下折行后的行数。
+    中文字符宽度 ≈ size/72 英寸，ASCII ≈ 0.52 倍；空文本按 1 行计。
+    供 PPT 排版分页使用，避免固定高度导致的假性续页（续页后大面积空白）。"""
+    try:
+        width_in = float(width_in)
+        size = float(size)
+    except Exception:
+        return 1
+    if width_in <= 0:
+        width_in = 1.0
+    cjk = size / 72.0
+    half = cjk * 0.52
+    n = 0
+    for seg in str(text or "").split("\n"):
+        w = 0.0
+        for ch in seg:
+            w += cjk if ord(ch) > 0x2E7F else half
+        n += max(int(math.ceil(w / width_in)), 1) if w > 0 else 1
+    return max(n, 1)
 
 
 def _fence(p):
@@ -1180,13 +1203,8 @@ def render_pptx_visual(spec, out_path):
         return s
 
     def est_lines(text, width_in, size=24):
-        """估算 24pt 中文在给定宽度（英寸）下的行数（每中文字约 size/72 英寸宽）。"""
-        cw = size / 72.0
-        per = max(int(width_in / cw), 4)
-        n = 0
-        for seg in str(text).split("\n"):
-            n += max(int((len(seg) + per - 1) / per), 1)
-        return n
+        """估算在给定宽度（英寸）下的折行行数（中文字≈size/72 英寸宽，ASCII≈0.52倍）。"""
+        return _wrap_lines(text, width_in, size)
 
     # ---------------- 封面：左侧大色块 + 右侧大标题 ----------------
     s = add_slide()
@@ -1222,7 +1240,7 @@ def render_pptx_visual(spec, out_path):
     body_tf = None
     est_h = 0.0
     BODY_TOP = 1.95
-    BODY_MAX = 4.55
+    BODY_MAX = 4.85
     h2_num = 0
     part_num = 0
 
@@ -1255,7 +1273,8 @@ def render_pptx_visual(spec, out_path):
 
     def ensure_space(need):
         nonlocal est_h
-        if est_h + need > BODY_MAX:
+        # 只有确实放不下才续页（+0.02in 容差），避免短段落触发假性续页
+        if est_h + need > BODY_MAX + 0.02:
             n = cont_n.get(cur_title, 0) + 1
             cont_n[cur_title] = n
             open_slide(cur_title + ("（续%d）" % n if n > 1 else "（续）"))
@@ -1665,7 +1684,7 @@ def render_pptx(spec, out_path):
     body_tf = None
     est_h = 0.0
     BODY_TOP = 1.55
-    BODY_MAX = 5.35
+    BODY_MAX = 5.55
     h2_num = 0
     part_num = 0
 
@@ -1695,14 +1714,18 @@ def render_pptx(spec, out_path):
 
     def ensure_space(need):
         nonlocal est_h
-        if est_h + need > BODY_MAX:
+        # 只有确实放不下才续页（+0.02in 容差），避免短段落触发假性续页
+        if est_h + need > BODY_MAX + 0.02:
             open_slide(cur_title + "（续）")
 
     def para(text="", size=16, bold=False, color="333333", before=0, after=6, bullet=None,
              num=None, italic=False, font="微软雅黑"):
         nonlocal est_h
         ensure_body()
-        ensure_space(0.36 + after / 22.0)
+        # 按真实折行行数计费：行高 ≈ 字号×1.3，另加段后距，最小一行的实际高度
+        n_lines = _wrap_lines(text, CW, size)
+        need = max(n_lines * (size / 72.0) * 1.3, size / 72.0) + after / 72.0 + 0.02
+        ensure_space(need)
         p = body_tf.paragraphs[0] if not body_tf.paragraphs[0].runs and est_h == 0 else body_tf.add_paragraph()
         p.space_before = Pt(before)
         p.space_after = Pt(after)
@@ -1718,48 +1741,54 @@ def render_pptx(spec, out_path):
             rt = p.add_run()
             rt.text = text
             style_run(rt, size, bold, color, font, italic)
-        est_h += 0.36 + after / 22.0
+        est_h += need
 
     def add_h2_row(text):
         nonlocal est_h, h2_num
         ensure_body()
-        ensure_space(0.72)
+        n_lines = _wrap_lines(text, CW - 0.62, 18)
+        need = n_lines * 0.34 + 0.08
+        ensure_space(need)
         h2_num += 1
         y = BODY_TOP + est_h
         add_oval(cur, LM, y - 0.03, 0.42, str(h2_num), accent)
-        tf = add_box(cur, LM + 0.62, y - 0.07, CW - 0.62, 0.52)
+        tf = add_box(cur, LM + 0.62, y - 0.07, CW - 0.62, n_lines * 0.34 + 0.1)
         p = tf.paragraphs[0]
         r = p.add_run()
         r.text = text
         style_run(r, 18, True, hx(accent_dark))
-        est_h += 0.72
+        est_h += need
 
     def add_h3(text):
         nonlocal est_h
         ensure_body()
-        ensure_space(0.5)
+        n_lines = _wrap_lines(text, CW - 0.24, 16)
+        need = n_lines * 0.30 + 0.08
+        ensure_space(need)
         y = BODY_TOP + est_h
         add_rect(cur, LM, y + 0.06, 0.07, 0.26, accent)
-        tf = add_box(cur, LM + 0.24, y - 0.04, CW - 0.24, 0.44)
+        tf = add_box(cur, LM + 0.24, y - 0.04, CW - 0.24, n_lines * 0.30 + 0.08)
         p = tf.paragraphs[0]
         r = p.add_run()
         r.text = text
         style_run(r, 16, True, "444444")
-        est_h += 0.5
+        est_h += need
 
     def add_quote(text):
         nonlocal est_h
         ensure_body()
-        ensure_space(1.1)
+        n_lines = _wrap_lines(text, CW - 0.6, 15)
+        need = max(n_lines * 0.30 + 0.3, 1.0)
+        ensure_space(need)
         y = BODY_TOP + est_h
-        add_rect(cur, LM, y, CW, 0.9, light)
-        add_rect(cur, LM, y, 0.07, 0.9, accent)
-        tf = add_box(cur, LM + 0.3, y + 0.1, CW - 0.6, 0.7)
+        add_rect(cur, LM, y, CW, need - 0.15, light)
+        add_rect(cur, LM, y, 0.07, need - 0.15, accent)
+        tf = add_box(cur, LM + 0.3, y + 0.1, CW - 0.6, need - 0.35)
         p = tf.paragraphs[0]
         r = p.add_run()
         r.text = text
         style_run(r, 15, False, "555555", italic=True)
-        est_h += 1.1
+        est_h += need
 
     def add_code(text):
         nonlocal est_h

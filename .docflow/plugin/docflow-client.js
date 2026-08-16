@@ -60,6 +60,7 @@ return {
       '.dwf-filters{display:flex;gap:8px;align-items:center;margin:6px 10px;flex-wrap:wrap}' +
       '.dwf-filters select{padding:3px 8px;border-radius:6px;border:1px solid rgba(127,127,127,.4);background:transparent;color:inherit;font-size:12px;cursor:pointer;max-width:180px}' +
       '.dwf-cat{display:inline-block;margin-right:6px;padding:0 7px;border-radius:999px;background:rgba(155,89,182,.14);color:#9B59B6;font-size:11px;font-weight:600;white-space:nowrap}' +
+      '.dwf-catsel{flex:none;max-width:112px;margin-right:6px;padding:1px 6px;border-radius:6px;border:1px solid rgba(127,127,127,.4);background:transparent;color:#9B59B6;font-size:11px;font-weight:600;cursor:pointer}' +
       '.dwf-tbl input[type=checkbox]{width:14px;height:14px;cursor:pointer;vertical-align:middle;accent-color:#1F6FB2}' +
       '.dwf-selbar{display:flex;gap:10px;align-items:center;margin:6px 10px;flex-wrap:wrap}' +
       '.dwf-selbar .dwf-selinfo{font-size:12px;color:#777}' +
@@ -433,6 +434,16 @@ return {
         }
       }
 
+      async function onSetCat(id, cat) {
+        try {
+          await host.call('set-category', { fileId: id, category: cat })
+          await refresh()
+        } catch (e) {
+          setMsg(String((e && e.message) || e))
+          setMsgOk(false)
+        }
+      }
+
       const [selected, setSelected] = React.useState([])
       function toggleSel(id) {
         setSelected((cur) => {
@@ -504,7 +515,17 @@ return {
               all.map((i) =>
                 h('tr', { key: i.fileId },
                   h('td', { className: 'dwf-tbl-name' },
-                    i.category ? h('span', { className: 'dwf-cat' }, '【' + i.category + '】') : null,
+                    h('select', {
+                      className: 'dwf-catsel',
+                      value: i.category || '',
+                      title: '修改分类',
+                      onClick: (e) => e.stopPropagation(),
+                      onChange: (e) => onSetCat(i.fileId, e.target.value),
+                    },
+                      h('option', { value: '' }, '未分类'),
+                      categories.filter((c) => c !== '未分类').map((c) => h('option', { key: c, value: c }, c)),
+                      i.category && categories.indexOf(i.category) < 0 ? h('option', { key: i.category, value: i.category }, i.category) : null,
+                    ),
                     h('a', { href: i.downloadUrl, download: i.name, title: i.name }, String(i.name || '').replace(/^【.+?】/, '')),
                   ),
                   h('td', null,
