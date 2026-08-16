@@ -34,6 +34,24 @@ import re
 import time
 import datetime
 
+
+# 多用户路径栅栏根目录（None=管理员，不限路径；字符串=普通用户根，越界即拒绝）
+FENCE_ROOT = None
+
+
+def _fence(p):
+    """普通用户模式下校验路径：必须位于 FENCE_ROOT 之内，否则拒绝。"""
+    global FENCE_ROOT
+    if FENCE_ROOT is None or p is None:
+        return p
+    try:
+        rp = os.path.realpath(str(p))
+    except Exception:
+        rp = str(p)
+    if rp == FENCE_ROOT or rp.startswith(FENCE_ROOT + os.sep):
+        return p
+    err("禁止访问用户目录之外的路径: %s" % p)
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 CJK_PDF_FONT = "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"
@@ -3098,33 +3116,42 @@ def main():
                 stream.reconfigure(encoding="utf-8")
             except Exception:
                 pass
+        # ── 多用户路径栅栏 ──
+        # 插件对非管理员用户以 `python engine.py __as__ <用户根> <命令> ...` 调用；
+        # 栅栏生效后，所有命令的文件路径必须位于用户根之内，否则直接拒绝
+        # （防止分用户文档工作流经引擎读取主用户项目内容——后台引擎进程内兜底）。
+        global FENCE_ROOT
+        FENCE_ROOT = None
+        if len(sys.argv) > 2 and sys.argv[1] == "__as__":
+            FENCE_ROOT = os.path.realpath(sys.argv[2])
+            sys.argv = [sys.argv[0]] + list(sys.argv[3:])
         if len(sys.argv) < 2:
             err("用法: docflow_engine.py decode|extract|create|edit|meta …")
         cmd = sys.argv[1]
         if cmd == "decode":
             if len(sys.argv) != 3:
                 err("decode 需要 <out_path>")
-            cmd_decode(sys.argv[2])
+            cmd_decode(_fence(sys.argv[2]))
         elif cmd == "decode-file":
             if len(sys.argv) != 4:
                 err("decode-file 需要 <b64_path> <out_path>")
-            cmd_decode_file(sys.argv[2], sys.argv[3])
+            cmd_decode_file(_fence(sys.argv[2]), _fence(sys.argv[3]))
         elif cmd == "extract":
             if len(sys.argv) != 3:
                 err("extract 需要 <file>")
-            cmd_extract(sys.argv[2])
+            cmd_extract(_fence(sys.argv[2]))
         elif cmd == "meta":
             if len(sys.argv) != 3:
                 err("meta 需要 <file>")
-            cmd_meta(sys.argv[2])
+            cmd_meta(_fence(sys.argv[2]))
         elif cmd == "create":
             if len(sys.argv) not in (4, 5):
                 err("create 需要 <fmt> <out_path> [spec_path]")
-            cmd_create(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) == 5 else None)
+            cmd_create(sys.argv[2], _fence(sys.argv[3]), _fence(sys.argv[4]) if len(sys.argv) == 5 else None)
         elif cmd == "edit":
             if len(sys.argv) not in (5, 6):
                 err("edit 需要 <fmt> <in> <out> [spec_path]")
-            cmd_edit(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5] if len(sys.argv) == 6 else None)
+            cmd_edit(sys.argv[2], _fence(sys.argv[3]), _fence(sys.argv[4]), _fence(sys.argv[5]) if len(sys.argv) == 6 else None)
         elif cmd == "lit-search":
             if len(sys.argv) not in (3, 4):
                 err("lit-search 需要 <term> [retmax]")
@@ -3138,7 +3165,7 @@ def main():
         elif cmd == "lit-verify":
             if len(sys.argv) != 3:
                 err("lit-verify 需要 <refs_json_path>")
-            with io.open(sys.argv[2], "r", encoding="utf-8") as f:
+            with io.open(_fence(sys.argv[2]), "r", encoding="utf-8") as f:
                 refs = json.loads(f.read() or "[]")
             ok(lit_verify(refs))
         elif cmd == "image-search":
@@ -3150,19 +3177,19 @@ def main():
         elif cmd == "image-download":
             if len(sys.argv) != 4:
                 err("image-download 需要 <url> <out_path>")
-            cmd_image_download(sys.argv[2], sys.argv[3])
+            cmd_image_download(sys.argv[2], _fence(sys.argv[3]))
         elif cmd == "image-info":
             if len(sys.argv) != 3:
                 err("image-info 需要 <file>")
-            cmd_image_info(sys.argv[2])
+            cmd_image_info(_fence(sys.argv[2]))
         elif cmd == "image-recognize":
             if len(sys.argv) != 3:
                 err("image-recognize 需要 <file>")
-            cmd_image_recognize(sys.argv[2])
+            cmd_image_recognize(_fence(sys.argv[2]))
         elif cmd == "tcm-verify":
             if len(sys.argv) not in (3, 4):
                 err("tcm-verify 需要 <items_json_path> [with_lit]")
-            with io.open(sys.argv[2], "r", encoding="utf-8") as f:
+            with io.open(_fence(sys.argv[2]), "r", encoding="utf-8") as f:
                 items = json.loads(f.read() or "[]")
             with_lit = (len(sys.argv) == 4 and sys.argv[3] == "0") is False
             ok(tcm_verify(items, with_lit=with_lit))
@@ -3173,7 +3200,7 @@ def main():
             # （DSH fs.stat 不提供 mtime，shell stat 又受沙箱限制不可靠）
             if len(sys.argv) != 3:
                 err("dir-mtimes 需要 <dir>")
-            d = sys.argv[2]
+            d = _fence(sys.argv[2])
             out = {}
             try:
                 for name in os.listdir(d):

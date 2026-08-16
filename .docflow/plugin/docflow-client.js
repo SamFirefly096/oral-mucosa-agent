@@ -59,7 +59,18 @@ return {
       '.dwf-tbl-req{color:#555}.dwf-tbl-sum{color:#777}' +
       '.dwf-filters{display:flex;gap:8px;align-items:center;margin:6px 10px;flex-wrap:wrap}' +
       '.dwf-filters select{padding:3px 8px;border-radius:6px;border:1px solid rgba(127,127,127,.4);background:transparent;color:inherit;font-size:12px;cursor:pointer;max-width:180px}' +
-      '.dwf-cat{display:inline-block;margin-right:6px;padding:0 7px;border-radius:999px;background:rgba(155,89,182,.14);color:#9B59B6;font-size:11px;font-weight:600;white-space:nowrap}')
+      '.dwf-cat{display:inline-block;margin-right:6px;padding:0 7px;border-radius:999px;background:rgba(155,89,182,.14);color:#9B59B6;font-size:11px;font-weight:600;white-space:nowrap}' +
+      '.dwf-tbl input[type=checkbox]{width:14px;height:14px;cursor:pointer;vertical-align:middle;accent-color:#1F6FB2}' +
+      '.dwf-selbar{display:flex;gap:10px;align-items:center;margin:6px 10px;flex-wrap:wrap}' +
+      '.dwf-selbar .dwf-selinfo{font-size:12px;color:#777}' +
+      '@media (max-width:640px){' +
+      '.dwf-up2{flex:none;min-width:auto;padding:4px 8px;margin:0 2px}' +
+      '.dwf-up2 .dwf-up-txt{display:none}' +
+      '.dwf-dock-file{display:none}' +
+      '.dwf-dock{row-gap:4px;column-gap:6px}' +
+      '.dwf-filters select{max-width:128px}' +
+      '.dwf-tbl th,.dwf-tbl td{padding:4px 6px}' +
+      '}')
 
     // ---------- 共享上传逻辑 ----------
     async function toB64(file) {
@@ -247,8 +258,8 @@ return {
           onFiles(e.dataTransfer && e.dataTransfer.files)
         },
       },
-        busy ? '上传中…' : '📎 文档',
-        note ? h('span', null, note) : null,
+        busy ? h('span', { className: 'dwf-up-txt' }, '上传中…') : h('span', { className: 'dwf-up-txt' }, '📎 文档'),
+        note ? h('span', { className: 'dwf-up-note' }, note) : null,
         h('input', {
           type: 'file',
           multiple: true,
@@ -422,6 +433,34 @@ return {
         }
       }
 
+      const [selected, setSelected] = React.useState([])
+      function toggleSel(id) {
+        setSelected((cur) => {
+          const n = cur.slice()
+          const i = n.indexOf(id)
+          if (i >= 0) n.splice(i, 1)
+          else n.push(id)
+          return n
+        })
+      }
+      const allIds = outputs.concat(uploads).map((i) => i.fileId)
+      const allSel = allIds.length > 0 && selected.length === allIds.length
+      function toggleAllSel() {
+        setSelected(allSel ? [] : allIds.slice())
+      }
+      async function onRemoveSelected() {
+        if (!selected.length) return
+        if (!window.confirm('确定删除选中的 ' + selected.length + ' 个文件？删除后不可恢复。')) return
+        try {
+          await host.call('remove', { fileIds: selected })
+          setSelected([])
+          await refresh()
+        } catch (e) {
+          setMsg(String((e && e.message) || e))
+          setMsgOk(false)
+        }
+      }
+
       const recent = outputs.slice(0, 2).concat(uploads.slice(0, 1))
       const all = outputs.concat(uploads)
       return h('div', null,
@@ -456,7 +495,10 @@ return {
                 h('th', null, '修改时间'),
                 h('th', null, '用户要求'),
                 h('th', null, '简要修改内容'),
-                h('th', null, '操作'),
+                h('th', null,
+                  h('input', { type: 'checkbox', checked: allSel, onChange: toggleAllSel, title: '全选/取消全选' }),
+                  ' 全选',
+                ),
               )),
             h('tbody', null,
               all.map((i) =>
@@ -472,9 +514,15 @@ return {
                   h('td', { className: 'dwf-tbl-req' }, i.request || '—'),
                   h('td', { className: 'dwf-tbl-sum' }, i.summary || '—'),
                   h('td', null,
-                    h('button', { className: 'dwf-btn dwf-tbl-del', onClick: () => onRemove(i.fileId) }, '删除')),
+                    h('input', { type: 'checkbox', checked: selected.indexOf(i.fileId) >= 0, onChange: () => toggleSel(i.fileId) }),
+                    h('button', { className: 'dwf-btn dwf-tbl-del', onClick: () => onRemove(i.fileId) }, '删除'),
+                  ),
                 )),
             )),
+          all.length && selected.length ? h('div', { className: 'dwf-selbar' },
+            h('span', { className: 'dwf-selinfo' }, '已选 ' + selected.length + ' 项'),
+            h('button', { className: 'dwf-btn dwf-tbl-del', onClick: onRemoveSelected }, '删除选中'),
+          ) : null,
           all.length ? null : h('div', { className: 'dwf-empty' }, '暂无文件，拖入文档即可上传'),
         ) : null,
       )

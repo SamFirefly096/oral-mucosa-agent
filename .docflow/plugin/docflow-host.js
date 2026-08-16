@@ -204,8 +204,10 @@ return {
 
     async function runPy(args, stdin, user) {
       try {
+        // 非管理员用户：引擎以 __as__ <用户根> 运行，进程内路径栅栏拒绝越界访问
+        const prefix = user === ADMIN_USER ? '' : '__as__ ' + q(userRoot(user)) + ' '
         const spec = shell.resolve({
-          command: PY + ' ' + ENGINE + ' ' + args,
+          command: PY + ' ' + ENGINE + ' ' + prefix + args,
           workdir: ROOT,
           timeoutMs: 240000,
           stdoutMaxBytes: 64 * 1024 * 1024,
@@ -554,19 +556,22 @@ return {
 
     async function handleRemove(args) {
       const user = harnessUser(args)
-      const info = fileOf(args && args.fileId, user)
-      if (!info) return { ok: false, error: '文件不存在' }
-      files.delete(info.id)
+      const ids = Array.isArray(args && args.fileIds) ? args.fileIds : [(args && args.fileId)]
+      let removed = 0
       const um = metaOfUser(user)
-      if (um[info.id]) {
-        delete um[info.id]
-        saveMeta(user)
+      for (const fid of ids) {
+        const info = fileOf(fid, user)
+        if (!info) continue
+        files.delete(info.id)
+        if (um[info.id]) delete um[info.id]
+        try {
+          const spec = shell.resolve({ command: 'rm -f ' + q(info.path), workdir: userRoot(user), timeoutMs: 30000, sandboxPolicy: policyOf(user) })
+          await shell.run(spec)
+        } catch (e) {}
+        removed++
       }
-      try {
-        const spec = shell.resolve({ command: 'rm -f ' + q(info.path), workdir: userRoot(user), timeoutMs: 30000, sandboxPolicy: policyOf(user) })
-        await shell.run(spec)
-      } catch (e) {}
-      return { ok: true }
+      if (removed) saveMeta(user)
+      return { ok: true, removed: removed }
     }
 
     async function handleUrl(args) {
