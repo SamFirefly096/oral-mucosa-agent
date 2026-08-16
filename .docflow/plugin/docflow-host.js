@@ -19,14 +19,24 @@ return {
     let meta = {}
 
     async function loadMeta() {
+      // 主文件缺失/损坏时回退到 .bak（保存时同步写的双副本）
       try {
-        const raw = await fs.readText(await fs.resolve(META_PATH), 8 * 1024 * 1024)
+        const raw = await fs.readText(await fs.resolve(META_PATH))
+        if (raw) {
+          meta = JSON.parse(raw) || {}
+          return
+        }
+      } catch (e) {}
+      try {
+        const raw = await fs.readText(await fs.resolve(META_PATH + '.bak'))
         if (raw) meta = JSON.parse(raw) || {}
       } catch (e) {}
     }
     async function saveMeta() {
       try {
-        await fs.writeText(await fs.resolve(META_PATH), JSON.stringify(meta), undefined, undefined, POLICY)
+        const body = JSON.stringify(meta)
+        await fs.writeText(await fs.resolve(META_PATH), body, undefined, undefined, POLICY)
+        await fs.writeText(await fs.resolve(META_PATH + '.bak'), body, undefined, undefined, POLICY)
       } catch (e) {}
     }
     function metaOf(id, dflt) {
@@ -73,6 +83,23 @@ return {
       if (e === 'markdown') return 'md'
       return ['docx', 'pptx', 'ppt', 'pdf', 'txt', 'md', 'xlsx', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].indexOf(e) >= 0 ? e : 'file'
     }
+    function catOf(name) {
+      const m = /^【(.+?)】/.exec(String(name || ''))
+      return m ? m[1].trim() : ''
+    }
+    function stripCat(name) {
+      return String(name || '').replace(/^【.+?】/, '')
+    }
+    function applyCat(name, cat) {
+      const s = sanitize(name)
+      const c = String(cat || '').trim()
+      if (!c) return s
+      if (catOf(s)) return s
+      return '【' + sanitize(c) + '】' + s
+    }
+    function normCat(c) {
+      return c || '未分类'
+    }
     function newId(kind) { return kind + '_' + Date.now().toString(36) + '_' + (seq++).toString(36) }
     // 下载地址用相对路径：浏览器会按当前页面 origin 解析，
     // 用户通过任意地址（127.0.0.1 / 服务器IP / 域名 / 端口转发）访问 GUI 均可下载
@@ -113,10 +140,11 @@ return {
         kind: info.kind,
         size: info.size || 0,
         format: info.format,
+        category: m.category || '',
         createdAt: info.createdAt,
         downloadUrl: urlOf(info.id),
         direction: m.direction || (info.kind === 'uploads' ? 'upload' : 'output'),
-        mtime: m.mtime || fmtTime(info.createdAt),
+        mtime: fmtTime(info.fileMtime || info.createdAt) || m.mtime || '',
         request: m.request || '',
         summary: m.summary || '',
       }
@@ -247,10 +275,22 @@ return {
       } catch (e) {}
     }
 
+    // DSH 的 fs.stat 不返回 mtime，shell stat 又受沙箱限制；经引擎取磁盘真实修改时间
+    async function dirMtimes(dir) {
+      try {
+        const res = await runPy('dir-mtimes ' + q(dir))
+        const j = parseResult(res)
+        return j && typeof j === 'object' && !Array.isArray(j) ? j : {}
+      } catch (e) {
+        return {}
+      }
+    }
     async function scanDir(dir, kind) {
       try {
         const target = await fs.resolve(dir)
         const entries = await fs.listDir(target)
+        const mtMap = await dirMtimes(dir)
+        let metaDirty = false
         for (const e of entries) {
           if (e.type !== 'file') continue
           // 合法文件名：<u|o>_<base36>_<seq>__<原名>，例如 o_rvw001_0__报告.docx
@@ -258,21 +298,37 @@ return {
           if (!m) continue
           const id = m[1]
           if (files.has(id)) continue
+          const full = dir + '/' + e.name
+          // 修改时间以磁盘文件真实 mtime 为准（重启后不再重置为启动时间）
+          const realMt = mtMap[full] || 0
           files.set(id, {
             id: id,
             name: m[2],
             kind: kind,
-            path: dir + '/' + e.name,
+            path: full,
             size: e.size || 0,
             format: fmtOf(m[2]),
-            createdAt: Date.now(),
+            createdAt: realMt || Date.now(),
+            fileMtime: realMt || Date.now(),
           })
-          // 恢复历史元数据；缺失时用文件 mtime 兜底
           if (!meta[id]) {
-            const st = await fs.stat(await fs.resolve(dir + '/' + e.name)).catch(() => null)
-            meta[id] = { direction: kind === 'uploads' ? 'upload' : 'output', mtime: fmtTime((st && st.mtime) || Date.now()), request: '', summary: '' }
+            meta[id] = { direction: kind === 'uploads' ? 'upload' : 'output', mtime: fmtTime(realMt || Date.now()), request: '', summary: '' }
+            metaDirty = true
+          } else if (realMt && meta[id].mtime !== fmtTime(realMt)) {
+            // 校正历史错误记录（旧版曾把重启时间写进 meta）
+            meta[id].mtime = fmtTime(realMt)
+            metaDirty = true
+          }
+          // 旧数据迁移：从文件名【分类】前缀推断分类
+          if (!meta[id].category) {
+            const c = catOf(m[2])
+            if (c) {
+              meta[id].category = c
+              metaDirty = true
+            }
           }
         }
+        if (metaDirty) saveMeta()
       } catch (e) {}
     }
 
@@ -340,7 +396,9 @@ return {
     }
 
     async function handleUpload(args) {
-      const name = sanitize(args && args.name)
+      const name0 = sanitize(args && args.name)
+      const cat = String((args && args.category) || '').trim() || catOf(name0)
+      const name = applyCat(name0, cat)
       const b64 = String((args && args.dataB64) || '')
       if (!b64) return { ok: false, error: '未收到文件数据' }
       if (b64.length > UPLOAD_MAX_B64) return { ok: false, error: '文件过大（超过约 90MB）' }
@@ -357,13 +415,13 @@ return {
       if (res.exitCode !== 0) {
         return { ok: false, error: '保存失败: ' + errOf(res) }
       }
-      const info = { id: id, name: name, kind: 'uploads', path: path, size: 0, format: fmtOf(name), createdAt: Date.now() }
+      const info = { id: id, name: name, kind: 'uploads', path: path, size: 0, format: fmtOf(name), createdAt: Date.now(), fileMtime: Date.now() }
       try {
         const st = await fs.stat(await fs.resolve(path))
         info.size = (st && st.size) || 0
       } catch (e) {}
       files.set(id, info)
-      meta[id] = { direction: 'upload', mtime: fmtTime(Date.now()), request: (args && args.request) || '', summary: (args && args.summary) || '上传文件' }
+      meta[id] = { direction: 'upload', mtime: fmtTime(Date.now()), category: catOf(name), request: (args && args.request) || '', summary: (args && args.summary) || '上传文件' }
       saveMeta()
       let text = ''
       let chars = 0
@@ -385,10 +443,24 @@ return {
       const kind = (args && args.kind) || 'all'
       if (kind === 'uploads' || kind === 'all') await scanDir(UPLOADS, 'uploads')
       if (kind === 'outputs' || kind === 'all') await scanDir(OUTPUTS, 'outputs')
+      const catF = String((args && args.category) || '').trim()
+      const fmtF = String((args && args.format) || '').toLowerCase()
       const all = []
       files.forEach((f) => all.push(f))
       all.sort((a, b) => b.createdAt - a.createdAt)
-      return { ok: true, items: all.filter((f) => kind === 'all' || f.kind === kind).map(pick) }
+      const picked = all.map(pick)
+      let items = picked
+      if (kind !== 'all') items = items.filter((f) => f.kind === kind)
+      if (catF) items = items.filter((f) => normCat(f.category) === catF)
+      if (fmtF) items = items.filter((f) => f.format === fmtF)
+      const categories = []
+      const formats = []
+      picked.forEach((f) => {
+        const c = normCat(f.category)
+        if (categories.indexOf(c) < 0) categories.push(c)
+        if (formats.indexOf(f.format) < 0) formats.push(f.format)
+      })
+      return { ok: true, items: items, categories: categories, formats: formats }
     }
 
     async function handleParse(args) {
@@ -440,7 +512,8 @@ return {
     async function doCreate(args) {
       const fmt = String(args.format || 'docx').toLowerCase()
       if (fmt === 'ppt') return { ok: false, error: '不支持旧版 .ppt 输出，请使用 pptx' }
-      const baseName = sanitize(args.outputName || ((args.title || '文档') + '.' + fmt))
+      const cat = String((args && args.category) || '').trim()
+      const baseName = applyCat(args.outputName || ((args.title || '文档') + '.' + fmt), cat)
       const finalName = /\.(docx|pptx|pdf|md|txt|xlsx)$/.test(baseName) ? baseName : baseName + '.' + fmt
       const id = newId('o')
       const path = OUTPUTS + '/' + id + '__' + finalName
@@ -457,7 +530,7 @@ return {
       if (res.exitCode !== 0) {
         return { ok: false, error: '生成失败: ' + errOf(res, 500) }
       }
-      const info = { id: id, name: finalName, kind: 'outputs', path: path, size: 0, format: fmt, createdAt: Date.now() }
+      const info = { id: id, name: finalName, kind: 'outputs', path: path, size: 0, format: fmt, createdAt: Date.now(), fileMtime: Date.now() }
       try {
         const st = await fs.stat(await fs.resolve(path))
         info.size = (st && st.size) || 0
@@ -466,6 +539,7 @@ return {
       meta[id] = {
         direction: 'output',
         mtime: fmtTime(Date.now()),
+        category: catOf(finalName),
         request: (args && args.request) || '',
         summary: (args && args.summary) || '生成 ' + fmt.toUpperCase() + ' 文档',
       }
@@ -483,8 +557,10 @@ return {
       if (fmt === 'markdown') fmt = 'md'
       if (fmt === 'ppt') return { ok: false, error: '旧版 .ppt 无法编辑，请另存为 .pptx 后重新上传' }
       if (['docx', 'pptx', 'pdf', 'md', 'txt', 'xlsx'].indexOf(fmt) < 0) return { ok: false, error: '不支持的格式: ' + fmt }
-      const base = String(info.name).replace(/\.[^.]+$/, '') || '文档'
-      const outName = sanitize(args.outputName || (base + '_修改.' + fmt))
+      const srcCat = (meta[info.id] && meta[info.id].category) || ''
+      const cat = (args && args.category) ? String(args.category).trim() : srcCat
+      const base = stripCat(String(info.name)).replace(/\.[^.]+$/, '') || '文档'
+      const outName = applyCat(args.outputName || (base + '_修改.' + fmt), cat)
       const finalName = /\.(docx|pptx|pdf|md|txt)$/.test(outName) ? outName : outName + '.' + fmt
       const id = newId('o')
       const path = OUTPUTS + '/' + id + '__' + finalName
@@ -495,7 +571,7 @@ return {
       if (res.exitCode !== 0) {
         return { ok: false, error: '修改失败: ' + errOf(res, 500) }
       }
-      const nfo = { id: id, name: finalName, kind: 'outputs', path: path, size: 0, format: fmt, createdAt: Date.now() }
+      const nfo = { id: id, name: finalName, kind: 'outputs', path: path, size: 0, format: fmt, createdAt: Date.now(), fileMtime: Date.now() }
       try {
         const st = await fs.stat(await fs.resolve(path))
         nfo.size = (st && st.size) || 0
@@ -504,6 +580,7 @@ return {
       meta[id] = {
         direction: 'output',
         mtime: fmtTime(Date.now()),
+        category: catOf(finalName),
         request: (args && args.request) || '',
         summary: (args && args.summary) || opsSummary(args.ops),
       }
@@ -541,6 +618,7 @@ return {
         request: { type: 'string', description: '用户要求（一句话记录在文件列表中，便于追溯本次生成目的）' },
         content: { type: 'string', description: '正文 markdown：\\n# 一级标题 / ## 二级标题 / ### 三级标题 / 普通段落 / - 无序列表 / 1. 有序列表 / > 引用 / | 表头 | 表头 | + | --- | --- | + 数据行 / ```代码块``` / --- 分隔线' },
         outputName: { type: 'string', description: '输出文件名（可省略扩展名）' },
+        category: { type: 'string', description: '文件分类（如 命理分析、科研申报书、测试），将以【分类】前缀加入文件名，便于按分类筛选' },
       },
       output: {
         schema: OUT_SCHEMA,
@@ -579,6 +657,7 @@ return {
           },
         },
         outputName: { type: 'string', description: '输出文件名（可省略扩展名）' },
+        category: { type: 'string', description: '文件分类（如 命理分析、科研申报书、测试），将以【分类】前缀加入输出文件名；缺省继承源文件分类' },
         request: { type: 'string', description: '用户要求（一句话记录在文件列表中，便于追溯本次修改目的）' },
       },
       output: {
@@ -596,22 +675,24 @@ return {
 
     ctx.effect(() => harness.registerTool(ctx, harness.defineTool({
       name: 'docflow_list_documents',
-      description: '列出文档工作流中已上传和已生成的所有文件（含下载地址）。',
+      description: '列出文档工作流中已上传和已生成的所有文件（含下载地址），可按分类和格式筛选。',
       parameters: {
         kind: { type: 'string', enum: ['uploads', 'outputs', 'all'], description: '列出范围，默认 all' },
+        category: { type: 'string', description: '按分类筛选（如 命理分析、科研申报书、测试；无分类文件用 未分类）' },
+        format: { type: 'string', description: '按格式筛选（docx/pptx/pdf/md/txt/xlsx 等）' },
       },
       output: {
-        schema: { type: 'object', additionalProperties: true, properties: { items: { type: 'array', items: { type: 'json' } } } },
+        schema: { type: 'object', additionalProperties: true, properties: { items: { type: 'array', items: { type: 'json' } }, categories: { type: 'array', items: { type: 'string' } }, formats: { type: 'array', items: { type: 'string' } } } },
         render(args, value) {
           const items = value.items || []
-          const lines = items.map((i) => (i.kind === 'outputs' ? '[生成] ' : '[上传] ') + i.name + ' (' + i.format + ', ' + kb(i.size) + ')\\n  下载: ' + i.downloadUrl)
+          const lines = items.map((i) => (i.kind === 'outputs' ? '[生成] ' : '[上传] ') + (i.category ? '[' + i.category + '] ' : '') + i.name + ' (' + i.format + ', ' + kb(i.size) + ')\\n  下载: ' + i.downloadUrl)
           return [{ type: 'text', text: '共 ' + items.length + ' 个文件：\\n' + (lines.join('\\n') || '（空）') }]
         },
       },
       async execute(args) {
         const r = await handleList(args || {})
         if (!r.ok) throw new Error(r.error)
-        return { items: r.items }
+        return { items: r.items, categories: r.categories, formats: r.formats }
       },
     })))
 
@@ -652,6 +733,7 @@ return {
         fileId: { type: 'string', required: true, description: '源文件 ID' },
         format: { type: 'string', enum: ['docx', 'pptx', 'pdf'], required: true, description: '目标格式' },
         outputName: { type: 'string', description: '输出文件名（可省略扩展名）' },
+        category: { type: 'string', description: '文件分类（如 命理分析、科研申报书、测试），将以【分类】前缀加入输出文件名；缺省继承源文件分类' },
       },
       output: {
         schema: OUT_SCHEMA,
@@ -668,12 +750,14 @@ return {
         const ex = await runPy('extract ' + q(info.path))
         const j = parseResult(ex)
         if (!j || !j.ok) throw new Error('无法读取源文件内容: ' + errOf(ex, 300))
-        const base = String(info.name).replace(/\.[^.]+$/, '') || '文档'
+        const base = stripCat(String(info.name)).replace(/\.[^.]+$/, '') || '文档'
+        const srcCat = (meta[info.id] && meta[info.id].category) || ''
         const createArgs = {
           format: fmt,
           title: base,
           content: (j.text || '').slice(0, 200000),
           outputName: args.outputName,
+          category: srcCat,
         }
         const r = await doCreate(createArgs)
         if (!r.ok) throw new Error(r.error)

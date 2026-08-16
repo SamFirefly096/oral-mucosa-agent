@@ -48,3 +48,7 @@ data/*.db.bak*
 .docflow/uploads/
 .docflow/outputs/
 .docflow/tmp/
+
+# 文档工作流元数据（含文档时间/用户要求/修改说明，防 git clean 误删）
+.docflow/meta.json
+.docflow/meta.json.bak

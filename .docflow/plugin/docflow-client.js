@@ -53,7 +53,10 @@ return {
       '.dwf-dir-in{background:rgba(46,139,87,.14);color:#2E8B57}' +
       '.dwf-dir-out{background:rgba(31,111,178,.14);color:#1F6FB2}' +
       '.dwf-tbl-time{color:#999;white-space:nowrap}' +
-      '.dwf-tbl-req{color:#555}.dwf-tbl-sum{color:#777}')
+      '.dwf-tbl-req{color:#555}.dwf-tbl-sum{color:#777}' +
+      '.dwf-filters{display:flex;gap:8px;align-items:center;margin:6px 10px;flex-wrap:wrap}' +
+      '.dwf-filters select{padding:3px 8px;border-radius:6px;border:1px solid rgba(127,127,127,.4);background:transparent;color:inherit;font-size:12px;cursor:pointer;max-width:180px}' +
+      '.dwf-cat{display:inline-block;margin-right:6px;padding:0 7px;border-radius:999px;background:rgba(155,89,182,.14);color:#9B59B6;font-size:11px;font-weight:600;white-space:nowrap}')
 
     // ---------- 共享上传逻辑 ----------
     async function toB64(file) {
@@ -267,14 +270,20 @@ return {
       const [msgOk, setMsgOk] = React.useState(true)
       const [preview, setPreview] = React.useState(null)
       const [engineOk, setEngineOk] = React.useState(true)
+      const [catFilter, setCatFilter] = React.useState('')
+      const [fmtFilter, setFmtFilter] = React.useState('')
+      const [categories, setCategories] = React.useState([])
+      const [formats, setFormats] = React.useState([])
 
       function kb(n) { return ((n || 0) / 1024).toFixed(1) + ' KB' }
 
       function refresh() {
-        return host.call('list', { kind: 'all' }).then((r) => {
+        return host.call('list', { kind: 'all', category: catFilter, format: fmtFilter }).then((r) => {
           if (r && r.ok) {
             setUploads((r.items || []).filter((i) => i.kind === 'uploads'))
             setOutputs((r.items || []).filter((i) => i.kind === 'outputs'))
+            setCategories(r.categories || [])
+            setFormats(r.formats || [])
           }
         }).catch((e) => {
           setMsg(String((e && e.message) || e))
@@ -293,7 +302,7 @@ return {
         refresh()
         const stop = ctx.interval(() => { refresh() }, 8000)
         return stop
-      }, [])
+      }, [catFilter, fmtFilter])
 
       async function onRemove(id) {
         try { await host.call('remove', { fileId: id }) } catch (e) {}
@@ -317,7 +326,8 @@ return {
       const uploadRows = uploads.map((i) =>
         h('li', { key: i.fileId },
           h('span', { className: 'dwf-badge' }, String(i.format || 'file').toUpperCase()),
-          h('span', { className: 'dwf-name', title: i.name }, i.name),
+          i.category ? h('span', { className: 'dwf-cat' }, '【' + i.category + '】') : null,
+          h('span', { className: 'dwf-name', title: i.name }, String(i.name || '').replace(/^【.+?】/, '')),
           h('span', { className: 'dwf-size' }, kb(i.size)),
           h('button', { className: 'dwf-btn', onClick: () => togglePreview(i.fileId) }, (preview && preview.fileId === i.fileId) ? '收起' : '预览'),
           h('button', { className: 'dwf-btn', onClick: () => onRemove(i.fileId) }, '删除'),
@@ -325,7 +335,8 @@ return {
       const outputRows = outputs.map((i) =>
         h('li', { key: i.fileId },
           h('span', { className: 'dwf-badge' }, String(i.format || 'file').toUpperCase()),
-          h('span', { className: 'dwf-name', title: i.name }, i.name),
+          i.category ? h('span', { className: 'dwf-cat' }, '【' + i.category + '】') : null,
+          h('span', { className: 'dwf-name', title: i.name }, String(i.name || '').replace(/^【.+?】/, '')),
           h('span', { className: 'dwf-size' }, kb(i.size)),
           h('a', { className: 'dwf-btn dwf-dl', href: i.downloadUrl, download: i.name }, '下载'),
         ))
@@ -337,6 +348,16 @@ return {
           : '⚠ 文档引擎未就绪，请查看聊天反馈'),
         h('div', { className: 'dwf-row' },
           h('button', { className: 'dwf-btn', onClick: () => refresh() }, '刷新'),
+        ),
+        h('div', { className: 'dwf-filters' },
+          h('select', { value: catFilter, onChange: (e) => setCatFilter(e.target.value) },
+            h('option', { value: '' }, '分类：全部'),
+            categories.map((c) => h('option', { key: c, value: c }, c)),
+          ),
+          h('select', { value: fmtFilter, onChange: (e) => setFmtFilter(e.target.value) },
+            h('option', { value: '' }, '格式：全部'),
+            formats.map((f) => h('option', { key: f, value: f }, String(f).toUpperCase())),
+          ),
         ),
         h('div', { className: 'dwf-sec' }, '已上传（' + uploads.length + '）'),
         uploads.length ? h('ul', { className: 'dwf-list' }, uploadRows) : h('div', { className: 'dwf-empty' }, '暂无上传文件'),
@@ -360,12 +381,18 @@ return {
       const [expanded, setExpanded] = React.useState(false)
       const [msg, setMsg] = React.useState('')
       const [msgOk, setMsgOk] = React.useState(true)
+      const [catFilter, setCatFilter] = React.useState('')
+      const [fmtFilter, setFmtFilter] = React.useState('')
+      const [categories, setCategories] = React.useState([])
+      const [formats, setFormats] = React.useState([])
 
       function refresh() {
-        return host.call('list', { kind: 'all' }).then((r) => {
+        return host.call('list', { kind: 'all', category: catFilter, format: fmtFilter }).then((r) => {
           if (r && r.ok) {
             setUploads((r.items || []).filter((i) => i.kind === 'uploads'))
             setOutputs((r.items || []).filter((i) => i.kind === 'outputs'))
+            setCategories(r.categories || [])
+            setFormats(r.formats || [])
           }
         }).catch((e) => {
           setMsg(String((e && e.message) || e))
@@ -377,7 +404,7 @@ return {
         refresh()
         const stop = ctx.interval(() => { refresh() }, 10000)
         return stop
-      }, [])
+      }, [catFilter, fmtFilter])
 
       const recent = outputs.slice(0, 2).concat(uploads.slice(0, 1))
       const all = outputs.concat(uploads)
@@ -395,6 +422,16 @@ return {
           msg ? h('span', { className: msgOk ? 'dwf-msg dwf-ok' : 'dwf-msg' }, msg) : null,
         ),
         expanded ? h('div', { className: 'dwf-tblwrap' },
+          h('div', { className: 'dwf-filters' },
+            h('select', { value: catFilter, onChange: (e) => setCatFilter(e.target.value) },
+              h('option', { value: '' }, '分类：全部'),
+              categories.map((c) => h('option', { key: c, value: c }, c)),
+            ),
+            h('select', { value: fmtFilter, onChange: (e) => setFmtFilter(e.target.value) },
+              h('option', { value: '' }, '格式：全部'),
+              formats.map((f) => h('option', { key: f, value: f }, String(f).toUpperCase())),
+            ),
+          ),
           h('table', { className: 'dwf-tbl' },
             h('thead', null,
               h('tr', null,
@@ -408,7 +445,9 @@ return {
               all.map((i) =>
                 h('tr', { key: i.fileId },
                   h('td', { className: 'dwf-tbl-name' },
-                    h('a', { href: i.downloadUrl, download: i.name, title: i.name }, i.name)),
+                    i.category ? h('span', { className: 'dwf-cat' }, '【' + i.category + '】') : null,
+                    h('a', { href: i.downloadUrl, download: i.name, title: i.name }, String(i.name || '').replace(/^【.+?】/, '')),
+                  ),
                   h('td', null,
                     h('span', { className: i.kind === 'outputs' ? 'dwf-dir dwf-dir-out' : 'dwf-dir dwf-dir-in' },
                       i.kind === 'outputs' ? '⬇ 生成' : '⬆ 上传')),

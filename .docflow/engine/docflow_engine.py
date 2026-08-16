@@ -3168,6 +3168,21 @@ def main():
             ok(tcm_verify(items, with_lit=with_lit))
         elif cmd == "tcm-query":
             ok(tcm_query_data())
+        elif cmd == "dir-mtimes":
+            # 返回目录内全部文件的真实修改时间（毫秒 epoch），供插件扫描时兜底显示
+            # （DSH fs.stat 不提供 mtime，shell stat 又受沙箱限制不可靠）
+            if len(sys.argv) != 3:
+                err("dir-mtimes 需要 <dir>")
+            d = sys.argv[2]
+            out = {}
+            try:
+                for name in os.listdir(d):
+                    p = os.path.join(d, name)
+                    if os.path.isfile(p):
+                        out[p] = int(os.stat(p).st_mtime * 1000)
+            except Exception:
+                pass
+            print(json.dumps(out, ensure_ascii=False))
         else:
             err("未知命令: %s" % cmd)
     except SystemExit:
