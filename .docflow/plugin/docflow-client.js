@@ -67,9 +67,10 @@ return {
       '.dwf-selbar .dwf-selinfo{font-size:12px;color:#777}' +
       '.dwf-tblbar{display:none}' +
       '@media (max-width:640px){' +
-      '.dwf-up2{flex:none;min-width:auto;padding:4px 8px;margin:0 2px}' +
-      '.dwf-up2 .dwf-up-txt{display:none}' +
+      '.dwf-up2{flex:none;min-width:auto;padding:6px 12px;margin:0 2px;font-size:12.5px;border-radius:8px}' +
+      '.dwf-up2 .dwf-up-txt{display:inline}' +
       '.dwf-dock-file{display:none}' +
+      '.dwf-dock-meta{display:none}' +
       '.dwf-dock{row-gap:4px;column-gap:6px;font-size:11px}' +
       '.dwf-dock-title{font-size:11.5px}' +
       '.dwf-root{max-width:100%}' +
@@ -89,7 +90,8 @@ return {
       '.dwf-tbl th:nth-child(6),.dwf-tbl td:nth-child(6){width:28%}' +
       '.dwf-tbl-name a{word-break:break-all}' +
       '.dwf-selbar{margin:6px 10px}' +
-      '}')
+      '}' +
+      '@media (max-width:640px){.uV2eYG_row{flex-wrap:wrap;row-gap:4px}.uV2eYG_trailing{flex-wrap:wrap;justify-content:flex-end}.uV2eYG_modes{flex-wrap:wrap}.uV2eYG_select{max-width:150px;min-width:0}}')
 
     // ---------- 共享上传逻辑 ----------
     async function toB64(file) {
