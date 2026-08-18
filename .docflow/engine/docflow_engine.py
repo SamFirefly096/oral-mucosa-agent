@@ -363,6 +363,9 @@ def parse_md(text):
         while i < n and lines[i].strip() and not re.match(
             r"^(#{1,3}\s|>\s?|```|\||\s*[-*•]\s+|\s*\d+[\.、)]\s+|---+$|\*\*\*+$)", lines[i]
         ):
+            # 参考文献条目（[n] 开头）作为新段落起点，不并入上一段
+            if re.match(r"^\[\d+\]", lines[i].strip()) and para:
+                break
             para.append(lines[i].strip())
             i += 1
         sections.append({"type": "p", "text": " ".join(para)})
@@ -384,6 +387,24 @@ def spec_title(spec):
 # ===========================================================================
 # DOCX
 # ===========================================================================
+_CITE_RE = __import__("re").compile(r"(\[\d+(?:[,\u2010\uFF0C\-]\d+)*\])")
+
+def _cite_segments(text):
+    """把正文中的 [n]、[n,m]、[n-m] 引用标注拆分为 (文本, 是否上标) 片段。"""
+    segs = []
+    pos = 0
+    for m in _CITE_RE.finditer(text):
+        if m.start() > pos:
+            segs.append((text[pos:m.start()], False))
+        # 段落开头的 [n]（后随空格+大写字母=文献列表条目）不上标
+        sup = m.start() > 0
+        segs.append((m.group(1), sup))
+        pos = m.end()
+    if pos < len(text):
+        segs.append((text[pos:], False))
+    return segs
+
+
 def render_docx(spec, out_path):
     from docx import Document
     from docx.shared import Pt, RGBColor, Cm
@@ -446,15 +467,19 @@ def render_docx(spec, out_path):
             pBdr.append(bottom)
             pPr.append(pBdr)
         if text:
-            r = p.add_run(text)
-            r.font.name = font or east
-            if r._element.rPr is not None and r._element.rPr.rFonts is not None:
-                r._element.rPr.rFonts.set(qn("w:eastAsia"), east)
-            r.font.size = Pt(size)
-            r.font.bold = bold
-            r.font.italic = italic
-            if color:
-                r.font.color.rgb = RGBColor.from_string(color.lstrip("#"))
+            # 引用数字角标上标：[n]、[n,m]、[n-m]（段落开头的 [n] 视为文献列表编号，不上标）
+            for seg, sup in _cite_segments(text):
+                r = p.add_run(seg)
+                r.font.name = font or east
+                if r._element.rPr is not None and r._element.rPr.rFonts is not None:
+                    r._element.rPr.rFonts.set(qn("w:eastAsia"), east)
+                r.font.size = Pt(size)
+                r.font.bold = bold
+                r.font.italic = italic
+                if sup:
+                    r.font.superscript = True
+                if color:
+                    r.font.color.rgb = RGBColor.from_string(color.lstrip("#"))
         return p
 
     def shade_par(p, hexcolor):
@@ -577,11 +602,14 @@ def render_docx(spec, out_path):
                 rb.font.name = "微软雅黑"
                 if rb._element.rPr is not None and rb._element.rPr.rFonts is not None:
                     rb._element.rPr.rFonts.set(qn("w:eastAsia"), "微软雅黑")
-                rt = p.add_run(str(it))
-                rt.font.size = Pt(11)
-                rt.font.name = "微软雅黑"
-                if rt._element.rPr is not None and rt._element.rPr.rFonts is not None:
-                    rt._element.rPr.rFonts.set(qn("w:eastAsia"), "微软雅黑")
+                for _seg, _sup in _cite_segments(str(it)):
+                    rt = p.add_run(_seg)
+                    rt.font.size = Pt(11)
+                    rt.font.name = "微软雅黑"
+                    if rt._element.rPr is not None and rt._element.rPr.rFonts is not None:
+                        rt._element.rPr.rFonts.set(qn("w:eastAsia"), "微软雅黑")
+                    if _sup:
+                        rt.font.superscript = True
         elif typ == "numbered":
             for n, it in enumerate(s.get("items", []), 1):
                 p = doc.add_paragraph()
@@ -597,15 +625,50 @@ def render_docx(spec, out_path):
                 rn.font.name = "微软雅黑"
                 if rn._element.rPr is not None and rn._element.rPr.rFonts is not None:
                     rn._element.rPr.rFonts.set(qn("w:eastAsia"), "微软雅黑")
-                rt = p.add_run(str(it))
-                rt.font.size = Pt(11)
-                rt.font.name = "微软雅黑"
-                if rt._element.rPr is not None and rt._element.rPr.rFonts is not None:
-                    rt._element.rPr.rFonts.set(qn("w:eastAsia"), "微软雅黑")
+                for _seg, _sup in _cite_segments(str(it)):
+                    rt = p.add_run(_seg)
+                    rt.font.size = Pt(11)
+                    rt.font.name = "微软雅黑"
+                    if rt._element.rPr is not None and rt._element.rPr.rFonts is not None:
+                        rt._element.rPr.rFonts.set(qn("w:eastAsia"), "微软雅黑")
+                    if _sup:
+                        rt.font.superscript = True
         elif typ == "table":
             render_table(s)
         elif typ == "divider":
             add_par("", after=8, border_bottom="#CCCCCC")
+        elif typ == "image":
+            local = resolve_image(s.get("src", ""))
+            if not local:
+                add_par("图片不可用: " + str(s.get("src", "")), italic=True, color="#999999", after=8)
+                return
+            try:
+                from PIL import Image as _Img
+                _im = _Img.open(local)
+                _iw, _ih = _im.size
+                # 页面可用宽度约 16cm，图片最大宽 15cm、最大高 12cm，等比缩放
+                _w = 15.0
+                if _iw and _ih:
+                    _h = _w * (_ih / float(_iw))
+                    if _h > 12.0:
+                        _h = 12.0
+                        _w = _h * (_iw / float(_ih))
+                else:
+                    _h = None
+                _p = doc.add_paragraph()
+                _p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                _p.paragraph_format.space_before = Pt(6)
+                _p.paragraph_format.space_after = Pt(2)
+                _r = _p.add_run()
+                if _h:
+                    _r.add_picture(local, width=Cm(_w), height=Cm(_h))
+                else:
+                    _r.add_picture(local, width=Cm(_w))
+                _alt = s.get("alt", "")
+                if _alt:
+                    add_par(_alt, size=9, color="#888888", align=WD_ALIGN_PARAGRAPH.CENTER, after=10)
+            except Exception as e:
+                add_par("图片加载失败: %s" % e, italic=True, color="#999999", after=8)
 
     def render_table(s):
         headers = s.get("headers") or []
@@ -797,15 +860,18 @@ def _docx_append_section(doc, s, t):
             pBdr.append(bottom)
             pPr.append(pBdr)
         if text:
-            r = p.add_run(text)
-            r.font.name = "微软雅黑"
-            if r._element.rPr is not None and r._element.rPr.rFonts is not None:
-                r._element.rPr.rFonts.set(qn("w:eastAsia"), "微软雅黑")
-            r.font.size = Pt(size)
-            r.font.bold = bold
-            r.font.italic = italic
-            if color:
-                r.font.color.rgb = RGBColor.from_string(color.lstrip("#"))
+            for seg, sup in _cite_segments(text):
+                r = p.add_run(seg)
+                r.font.name = "微软雅黑"
+                if r._element.rPr is not None and r._element.rPr.rFonts is not None:
+                    r._element.rPr.rFonts.set(qn("w:eastAsia"), "微软雅黑")
+                r.font.size = Pt(size)
+                r.font.bold = bold
+                r.font.italic = italic
+                if sup:
+                    r.font.superscript = True
+                if color:
+                    r.font.color.rgb = RGBColor.from_string(color.lstrip("#"))
         return p
 
     def shade_cell(cell, hexcolor):
@@ -823,6 +889,38 @@ def _docx_append_section(doc, s, t):
         add_par(s.get("text", ""), size=14, bold=True, color=t["accent_dark"], before=14, after=6)
     elif typ == "h3":
         add_par(s.get("text", ""), size=12, bold=True, color="#444444", before=10, after=4)
+    elif typ == "image":
+        from docx.shared import Cm as _Cm
+        local = resolve_image(s.get("src", ""))
+        if not local:
+            add_par("图片不可用: " + str(s.get("src", "")), italic=True, color="#999999", after=8)
+            return
+        try:
+            from PIL import Image as _Img
+            _im = _Img.open(local)
+            _iw, _ih = _im.size
+            _w = 15.0
+            if _iw and _ih:
+                _h = _w * (_ih / float(_iw))
+                if _h > 12.0:
+                    _h = 12.0
+                    _w = _h * (_iw / float(_ih))
+            else:
+                _h = None
+            _p = doc.add_paragraph()
+            _p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            _p.paragraph_format.space_before = Pt(6)
+            _p.paragraph_format.space_after = Pt(2)
+            _r = _p.add_run()
+            if _h:
+                _r.add_picture(local, width=_Cm(_w), height=_Cm(_h))
+            else:
+                _r.add_picture(local, width=_Cm(_w))
+            _alt = s.get("alt", "")
+            if _alt:
+                add_par(_alt, size=9, color="#888888", align=WD_ALIGN_PARAGRAPH.CENTER, after=10)
+        except Exception as e:
+            add_par("图片加载失败: %s" % e, italic=True, color="#999999", after=8)
     elif typ == "p":
         add_par(s.get("text", ""), indent=22)
     elif typ == "quote":
@@ -853,9 +951,12 @@ def _docx_append_section(doc, s, t):
             rb.font.bold = True
             rb.font.color.rgb = RGBColor.from_string(t["accent"].lstrip("#"))
             rb.font.name = "微软雅黑"
-            rt = p.add_run(str(it))
-            rt.font.size = Pt(11)
-            rt.font.name = "微软雅黑"
+            for _seg, _sup in _cite_segments(str(it)):
+                rt = p.add_run(_seg)
+                rt.font.size = Pt(11)
+                rt.font.name = "微软雅黑"
+                if _sup:
+                    rt.font.superscript = True
     elif typ == "numbered":
         for n, it in enumerate(s.get("items", []), 1):
             p = doc.add_paragraph()
@@ -869,9 +970,12 @@ def _docx_append_section(doc, s, t):
             rn.font.bold = True
             rn.font.color.rgb = RGBColor.from_string(t["accent"].lstrip("#"))
             rn.font.name = "微软雅黑"
-            rt = p.add_run(str(it))
-            rt.font.size = Pt(11)
-            rt.font.name = "微软雅黑"
+            for _seg, _sup in _cite_segments(str(it)):
+                rt = p.add_run(_seg)
+                rt.font.size = Pt(11)
+                rt.font.name = "微软雅黑"
+                if _sup:
+                    rt.font.superscript = True
     elif typ == "table":
         headers = s.get("headers") or []
         rows = s.get("rows") or []
@@ -1240,11 +1344,11 @@ def render_pptx_visual(spec, out_path):
     body_tf = None
     est_h = 0.0
     BODY_TOP = 1.95
-    BODY_MAX = 4.85
+    BODY_MAX = 5.0
     h2_num = 0
     part_num = 0
 
-    def open_slide(title_text, is_divider=False):
+    def open_slide(title_text, is_divider=False, nav=None):
         nonlocal cur, cur_title, body_tf, est_h, part_num
         cur = add_slide()
         cur_title = title_text
@@ -1256,6 +1360,15 @@ def render_pptx_visual(spec, out_path):
             add_text(cur, 1.05, 1.75, 3.0, 1.2, "PART %02d" % part_num, size=44, bold=True, color=accent)
             add_text(cur, 1.05, 3.1, 11.2, 1.6, title_text, size=44, bold=True, color=accent_dark)
             add_hline(cur, 1.1, 5.0, 3.5, accent, 2.5)
+            # 章节导航：列出本章小节，避免过渡页大块空白
+            if nav:
+                add_text(cur, 1.1, 5.35, 11.0, 0.5, "本章内容", size=20, bold=True, color=MED_GRAY)
+                ny = 5.95
+                for i, h2t in enumerate(nav[:6]):
+                    col = i % 2
+                    row = i // 2
+                    add_text(cur, 1.1 + col * 5.8, ny + row * 0.55, 5.6, 0.5,
+                             "· " + h2t, size=20, color=accent_dark)
             body_tf = None
         else:
             add_text(cur, LM, 0.5, 11.7, 0.9, title_text, size=32, bold=True, color=accent_dark, anchor="b")
@@ -1273,8 +1386,8 @@ def render_pptx_visual(spec, out_path):
 
     def ensure_space(need):
         nonlocal est_h
-        # 只有确实放不下才续页（+0.02in 容差），避免短段落触发假性续页
-        if est_h + need > BODY_MAX + 0.02:
+        # 只有确实放不下才续页（+0.1in 容差），避免短段落触发假性续页
+        if est_h + need > BODY_MAX + 0.1:
             n = cont_n.get(cur_title, 0) + 1
             cont_n[cur_title] = n
             open_slide(cur_title + ("（续%d）" % n if n > 1 else "（续）"))
@@ -1283,7 +1396,8 @@ def render_pptx_visual(spec, out_path):
         nonlocal est_h
         ensure_body()
         n_lines = est_lines(text, CW, size)
-        need = n_lines * 0.44 + 0.16 + after / 30.0
+        lh = 0.28 if size <= 16 else 0.46
+        need = n_lines * lh + 0.12 + after / 72.0
         ensure_space(need)
         p = body_tf.paragraphs[0] if not body_tf.paragraphs[0].runs and est_h == 0 else body_tf.add_paragraph()
         p.space_before = Pt(before)
@@ -1308,43 +1422,61 @@ def render_pptx_visual(spec, out_path):
         est_h += 0.75
 
     def add_bullet_cards(items):
-        """要点卡片网格：2 列圆角卡片，24pt 文字，铺满内容区。"""
+        """要点卡片网格：2 列圆角卡片，24pt 文字，按高度逐行分批铺满内容区。
+        修复：整批 4 卡超高时不再整体续页掏空标题页，而是按行拆分，
+        每页至少放下一行卡片；末行单卡时使用整行宽大卡片填满视觉。"""
         nonlocal est_h
         ensure_body()
         n = len(items)
         idx = 0
+        gap = 0.35
+        cw2 = (CW - gap) / 2.0          # 2 列时单卡宽度
+
+        def _card_h(it):
+            nl = est_lines(it, cw2 - 0.7, 24)
+            return min(max(nl * 0.46 + 0.72, 1.3), 2.55)
+
         while idx < n:
-            # 每页最多 4 张卡（2x2）铺满；不足 2 张用单列
-            batch = items[idx:idx + 4]
-            n_batch = len(batch)
-            cols = 2 if n_batch >= 2 else 1
-            gap = 0.35
-            cw = (CW - gap * (cols - 1)) / cols
-            heights = []
-            for it in batch:
-                nl = est_lines(it, cw - 0.7, 24)
-                hh = min(max(nl * 0.44 + 0.75, 1.35), 2.6)
-                heights.append(hh)
-            rows = (n_batch + cols - 1) // cols
-            row_h = [max(heights[i * cols:(i + 1) * cols]) for i in range(rows)]
-            total = sum(row_h) + gap * (rows - 1)
+            # 逐行收集（每行最多 2 卡，行高取 max），最多收集 2 行
+            rows_info = []              # [(row_h, [item_idx,...]), ...]
+            i = idx
+            while i < n and len(rows_info) < 2:
+                h1 = _card_h(items[i])
+                j = i + 1
+                if j < n:
+                    h2 = _card_h(items[j])
+                    rows_info.append((max(h1, h2), [i, j]))
+                    i = j + 1
+                else:
+                    rows_info.append((h1, [i]))
+                    i = j
+            # 在剩余空间内确定可放行数（至少 1 行）
+            take = len(rows_info)
+            while take > 1:
+                tot = sum(r[0] for r in rows_info[:take]) + gap * (take - 1)
+                if est_h + tot <= BODY_MAX + 0.02:
+                    break
+                take -= 1
+            batch_rows = rows_info[:take]
+            total = sum(r[0] for r in batch_rows) + gap * (take - 1)
             ensure_space(total + 0.1)
             y = BODY_TOP + est_h
-            for i, it in enumerate(batch):
-                r_ = i // cols
-                c_ = i % cols
-                x = LM + c_ * (cw + gap)
-                hh = row_h[r_]
-                add_rect(cur, x, y, cw, hh, light, radius=0.12)
-                add_rect(cur, x, y, 0.12, hh, accent)
-                add_text(cur, x + 0.35, y + 0.14, cw - 0.7, 0.55, "▪", size=30, bold=True, color=accent)
-                tf = add_box(cur, x + 0.35, y + 0.68, cw - 0.7, hh - 0.8)
-                p = tf.paragraphs[0]
-                r_2 = p.add_run()
-                r_2.text = it
-                style_run(r_2, 24, False, hx(DARK_GRAY))
-            est_h += total + gap + 0.1
-            idx += n_batch
+            for ri, (rh, ids) in enumerate(batch_rows):
+                single = len(ids) == 1
+                cw = CW if single else cw2
+                for k, it_idx in enumerate(ids):
+                    x = LM if single else LM + k * (cw + gap)
+                    add_rect(cur, x, y, cw, rh, light, radius=0.12)
+                    add_rect(cur, x, y, 0.12, rh, accent)
+                    add_text(cur, x + 0.35, y + 0.12, cw - 0.7, 0.5, "▪", size=30, bold=True, color=accent)
+                    tf = add_box(cur, x + 0.35, y + 0.64, cw - 0.7, rh - 0.74)
+                    p = tf.paragraphs[0]
+                    r_2 = p.add_run()
+                    r_2.text = items[it_idx]
+                    style_run(r_2, 24, False, hx(DARK_GRAY))
+                y += rh + gap
+            est_h += total + gap
+            idx += sum(len(r[1]) for r in batch_rows)
 
     def add_numbered(items):
         nonlocal est_h
@@ -1352,7 +1484,7 @@ def render_pptx_visual(spec, out_path):
         for i, it in enumerate(items):
             num = i + 1
             nl = est_lines(it, CW - 1.2, 24)
-            need = max(nl * 0.44 + 0.1, 0.72)
+            need = max(nl * 0.44 + 0.05, 0.66)
             ensure_space(need)
             y = BODY_TOP + est_h
             add_oval(cur, LM, y, 0.55, str(num), accent, font_size=24)
@@ -1361,13 +1493,13 @@ def render_pptx_visual(spec, out_path):
             r = p.add_run()
             r.text = it
             style_run(r, 24, False, hx(DARK_GRAY))
-            est_h += need + 0.18
+            est_h += need + 0.14
 
     def add_quote(text):
         nonlocal est_h
         ensure_body()
         nl = est_lines(text, CW - 1.4, 26)
-        hh = max(nl * 0.5 + 0.6, 1.1)
+        hh = max(nl * 0.46 + 0.45, 0.9)
         ensure_space(hh + 0.1)
         y = BODY_TOP + est_h
         add_rect(cur, LM, y, CW, hh, accent, radius=0.1)
@@ -1384,7 +1516,7 @@ def render_pptx_visual(spec, out_path):
         ensure_body()
         code_lines = (text or "").split("\n")
         n_lines = len(code_lines)
-        hh = min(n_lines * 0.5 + 0.4, 3.6)
+        hh = min(n_lines * 0.42 + 0.35, 3.6)
         ensure_space(hh + 0.1)
         y = BODY_TOP + est_h
         add_rect(cur, LM, y, CW, hh, accent_dark, radius=0.08)
@@ -1407,7 +1539,7 @@ def render_pptx_visual(spec, out_path):
         ncols = max(len(headers), max((len(rw) for rw in rows), default=0), 1)
         nrows = len(rows)
         vis_rows = min(nrows, 5)
-        tbl_h = 0.75 + 0.72 * vis_rows
+        tbl_h = 0.7 + 0.62 * vis_rows
         ensure_space(tbl_h + 0.15)
         y = BODY_TOP + est_h
         tbl = cur.shapes.add_table(1 + vis_rows, ncols, _In(LM), _In(y), _In(CW), _In(tbl_h)).table
@@ -1437,7 +1569,7 @@ def render_pptx_visual(spec, out_path):
         if nrows > vis_rows:
             add_text(cur, LM, y + tbl_h + 0.12, CW, 0.5,
                      "… 共 %d 行数据" % nrows, size=24, color=MED_GRAY, align=PP_ALIGN.CENTER)
-        est_h += tbl_h + 0.15
+        est_h += tbl_h + 0.12
 
     def add_image(src, alt=""):
         nonlocal est_h
@@ -1450,7 +1582,7 @@ def render_pptx_visual(spec, out_path):
             from PIL import Image
             im = Image.open(local)
             iw, ih = im.size
-            max_w, max_h = 8.0, 3.6
+            max_w, max_h = 7.6, 2.9
             ratio = min(max_w / iw, max_h / ih) if iw and ih else 1
             w = max(1.0, iw * ratio)
             h = max(1.0, ih * ratio)
@@ -1466,22 +1598,67 @@ def render_pptx_visual(spec, out_path):
         except Exception as e:
             para("图片加载失败: %s" % e, size=24)
 
+    def add_references(text):
+        """参考文献条目：12pt 紧凑排版，逐条按每页容量自动切页，杜绝大段溢出。"""
+        nonlocal est_h
+        ensure_body()
+        entries = [e for e in re.split(r"(?=\[\d+\])", text) if e.strip()]
+        for e in entries:
+            nl = est_lines(e, CW, 12)
+            need = nl * 0.26 + 0.1 + 3 / 72.0
+            ensure_space(need)
+            p = body_tf.paragraphs[0] if not body_tf.paragraphs[0].runs and est_h == 0 else body_tf.add_paragraph()
+            p.space_after = Pt(3)
+            r = p.add_run()
+            r.text = e
+            style_run(r, 12, False, hx(DARK_GRAY))
+            est_h += need
+
     sections = content_sections(spec)
+    # 预扫描：每个 h1 后到下一个 h1 前的 h2 标题（供 PART 过渡页导航）；
+    # 无 h2 的章节退回用首个要点块/段落作内容预告
+    chapter_h2 = {}
+    chapter_pv = {}
+    cur_h1 = None
+    for _s in sections:
+        if _s.get("type") == "h1":
+            cur_h1 = _s.get("text", "")
+            chapter_h2.setdefault(cur_h1, [])
+            chapter_pv.setdefault(cur_h1, [])
+            continue
+        if cur_h1 is None:
+            continue
+        if _s.get("type") == "h2":
+            chapter_h2[cur_h1].append(_s.get("text", ""))
+        elif not chapter_pv[cur_h1]:
+            if _s.get("type") == "bullets":
+                chapter_pv[cur_h1] = [it[:22] for it in _s.get("items", [])[:4]]
+            elif _s.get("type") in ("p", "quote") and _s.get("text", "").strip():
+                chapter_pv[cur_h1] = [_s["text"].strip()[:28]]
+            elif _s.get("type") == "table":
+                chapter_pv[cur_h1] = ["数据表：" + " · ".join((_s.get("headers") or [])[:3])]
+            elif _s.get("type") == "image":
+                chapter_pv[cur_h1] = [(_s.get("alt", "") or "章节配图")[:28]]
     for s in sections:
         typ = s.get("type")
         if typ == "h1":
-            open_slide(s.get("text", ""), is_divider=True)
+            _h1t = s.get("text", "")
+            nav = chapter_h2.get(_h1t) or chapter_pv.get(_h1t) or []
+            open_slide(_h1t, is_divider=True, nav=nav)
         elif typ == "h2":
             if body_tf is None:
                 open_slide(s.get("text", ""))
-            elif est_h > 1.6:
+            elif est_h > 2.2:
                 open_slide(s.get("text", ""))
             else:
                 add_h2_row(s.get("text", ""))
         elif typ == "h3":
             add_h2_row(s.get("text", ""))
         elif typ == "p":
-            para(s.get("text", ""), size=24)
+            if re.match(r"^\[\d+\]", s.get("text", "")):
+                add_references(s.get("text", ""))
+            else:
+                para(s.get("text", ""), size=24)
         elif typ == "bullets":
             add_bullet_cards(s.get("items", []))
         elif typ == "numbered":
