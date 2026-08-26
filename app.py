@@ -2,36 +2,58 @@
 口腔黏膜病AI诊断Agent — Web前端服务
 模式1: 医学生训练 (RealisticPatientAgent)
 模式2: 患者咨询 (ChiefMedAgent)
+
+多用户系统：注册/登录、令牌认证、会话按用户隔离。
+admin（原访问者，密码 = ACCESS_PASSWORD，默认 20260705）拥有最高权限。
 """
-import sys, os, json, random, time, threading
+import sys, os, json, random, time, threading, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["MIRA_ENABLE_THINKING"] = "false"
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, redirect
 from flask_cors import CORS
 from database import get_hpi_text, query_table, list_cases
 from agents_enhanced import ChiefMedAgent, RealisticPatientAgent, PatientContext
 from config import ACCESS_PASSWORD, PHOTO_DIR
+import user_store
 
 app = Flask(__name__, static_folder="web", static_url_path="")
 CORS(app)
 
-def get_pw():
-    """Extract password from request header or query param."""
-    return request.headers.get("X-Access-Password", "") or request.args.get("pw", "")
+# ── 认证 ─────────────────────────────────────
+def _current_user():
+    """从请求取当前登录用户（X-Auth-Token 头或 ?t= 参数）。未登录返回 None。"""
+    token = request.headers.get("X-Auth-Token", "") or request.args.get("t", "")
+    return user_store.resolve_token(token.strip()) if token else None
+
+def _require_admin():
+    u = _current_user()
+    if u and u["role"] == "admin":
+        return u
+    return None
+
+PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/register"}
 
 @app.before_request
 def check_auth():
-    """Require password for all routes."""
-    if request.path.startswith("/api/photo/"): return
-    if request.path.startswith("/favicon"): return
-    if request.path in ("/", "/index.html") or request.path.endswith(".html"):
+    """API 需登录令牌；照片与静态资源免鉴权（由前端控制跳转）。"""
+    p = request.path
+    if p.startswith("/api/photo/") or p.startswith("/favicon"):
+        return None
+    if p.startswith("/") and p.endswith(".html") or p in ("/", "/index.html", "/app.js"):
+        # 页面骨架无需鉴权；旧链接 ?pw= 兼容：正确则自动登录 admin 并携带令牌跳转
         pw = request.args.get("pw", "")
-        if pw == ACCESS_PASSWORD: return
-        return send_from_directory("web", "login.html")
-    if request.path.startswith("/api/"):
-        if get_pw() != ACCESS_PASSWORD:
-            return jsonify({"error": "密码错误"}), 401
+        if pw and pw == ACCESS_PASSWORD:
+            admin = user_store.ensure_admin()
+            token = user_store.grant_token(admin["id"])
+            return redirect(f"/?t={token}")
+        return None
+    if p.startswith("/api/"):
+        if p in PUBLIC_API_PATHS:
+            return None
+        if _current_user() is None:
+            return jsonify({"error": "未登录或登录已过期"}), 401
+    return None
 
 # Photo mapping: hadm_id -> list of photo subdirectory names
 import glob as _glob
@@ -53,7 +75,7 @@ sessions = {}  # session_id -> {mode, agent, patient_agent, ctx, history}
 # ── Session persistence ──
 # 会话落盘到 outputs/web_sessions/（outputs 已被 .gitignore 排除），
 # 服务重启/自动部署后自动恢复，历史会话不再丢失。
-SESSION_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "web_sessions")
+SESSION_DIR = os.environ.get("OM_SESSION_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "web_sessions")
 MAX_SESSIONS = 100
 _session_lock = threading.Lock()
 
@@ -99,7 +121,7 @@ def _session_file(session_id):
     return os.path.join(SESSION_DIR, f"{session_id}.json")
 
 def _save_session(session_id):
-    """将单个会话原子写入磁盘，并裁剪超过上限的旧会话。"""
+    """将单个会话原子写入磁盘，并裁剪超过上限的旧会话（按用户各自不超过上限）。"""
     s = sessions.get(session_id)
     if not s:
         return
@@ -107,6 +129,8 @@ def _save_session(session_id):
         os.makedirs(SESSION_DIR, exist_ok=True)
         payload = {
             "session_id": session_id,
+            "user_id": s.get("user_id"),
+            "username": s.get("username", ""),
             "mode": s.get("mode"),
             "case_id": s.get("case_id"),
             "title": s.get("title", "医学生"),
@@ -128,11 +152,13 @@ def _save_session(session_id):
         print(f"[sessions] save {session_id} failed: {e}", flush=True)
 
 def _load_sessions():
-    """启动时从磁盘恢复全部会话（Agent 用保存的 message_history 重建）。"""
+    """启动时从磁盘恢复全部会话（Agent 用保存的 message_history 重建）。
+    旧版会话没有 user_id，恢复时归属管理员（admin）。"""
     try:
         os.makedirs(SESSION_DIR, exist_ok=True)
     except Exception:
         return
+    admin_id = user_store.ensure_admin()["id"]
     files = sorted(_glob.glob(os.path.join(SESSION_DIR, "*.json")),
                    key=os.path.getmtime, reverse=True)
     restored = 0
@@ -147,6 +173,8 @@ def _load_sessions():
             ctx = d.get("ctx")
             sessions[sid] = {
                 "mode": mode,
+                "user_id": d.get("user_id") or admin_id,
+                "username": d.get("username", ""),
                 "case_id": d.get("case_id"),
                 "patient_agent": _agent_from_dict(d.get("patient_agent"), ctx),
                 "doctor_agent": _agent_from_dict(d.get("doctor_agent")),
@@ -166,18 +194,28 @@ def _load_sessions():
         print(f"[sessions] restored {restored} session(s) from disk", flush=True)
 
 def _prune_sessions():
-    """保留最新 MAX_SESSIONS 个会话（磁盘+内存同步裁剪）。"""
+    """每用户保留最新 MAX_SESSIONS 个会话（磁盘+内存同步裁剪）。"""
     try:
         files = sorted(_glob.glob(os.path.join(SESSION_DIR, "*.json")),
                        key=os.path.getmtime, reverse=True)
+        per_user = {}
+        for fp in files:
+            sid = os.path.basename(fp)[:-5]
+            try:
+                with open(fp, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                uid = d.get("user_id") or "legacy"
+            except Exception:
+                uid = "unknown"
+            per_user.setdefault(uid, []).append((fp, sid))
         with _session_lock:
-            for fp in files[MAX_SESSIONS:]:
-                sid = os.path.basename(fp)[:-5]
-                try:
-                    os.remove(fp)
-                except OSError:
-                    pass
-                sessions.pop(sid, None)
+            for uid, items in per_user.items():
+                for fp, sid in items[MAX_SESSIONS:]:
+                    try:
+                        os.remove(fp)
+                    except OSError:
+                        pass
+                    sessions.pop(sid, None)
     except Exception:
         pass
 
@@ -196,6 +234,139 @@ def serve_app_js():
 def serve_login():
     return send_from_directory("web", "login.html")
 
+# ═══════════════════ 用户系统 API ═══════════════════
+
+@app.route("/api/auth/login", methods=["POST"])
+def auth_login():
+    data = request.json or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    user = user_store.check_login(username, password)
+    if not user:
+        time.sleep(0.5)  # 降低暴力尝试速率
+        return jsonify({"error": "用户名或密码错误"}), 401
+    token = user_store.grant_token(user["id"])
+    return jsonify({"token": token, "user": user_store.public_user(user)})
+
+@app.route("/api/auth/register", methods=["POST"])
+def auth_register():
+    data = request.json or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    display_name = (data.get("display_name") or "").strip()[:20]
+    if not re.match(r"^[A-Za-z0-9_\-\u4e00-\u9fa5]{2,24}$", username):
+        return jsonify({"error": "用户名需2-24位，仅限中英文、数字、下划线或短横线"}), 400
+    if len(password) < 6:
+        return jsonify({"error": "密码至少6位"}), 400
+    try:
+        user = user_store.create_user(username, password, "user", display_name)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    token = user_store.grant_token(user["id"])
+    return jsonify({"token": token, "user": user_store.public_user(user)})
+
+@app.route("/api/auth/logout", methods=["POST"])
+def auth_logout():
+    token = request.headers.get("X-Auth-Token", "")
+    if token:
+        user_store.revoke_token(token.strip())
+    return jsonify({"ok": True})
+
+@app.route("/api/auth/me")
+def auth_me():
+    u = _current_user()
+    if not u:
+        return jsonify({"error": "未登录"}), 401
+    return jsonify({"user": user_store.public_user(u)})
+
+@app.route("/api/auth/change_password", methods=["POST"])
+def auth_change_password():
+    """登录用户自行修改密码（修改后需重新登录）。"""
+    u = _current_user()
+    if not u:
+        return jsonify({"error": "未登录"}), 401
+    data = request.json or {}
+    old = data.get("old_password") or ""
+    new = data.get("new_password") or ""
+    if not user_store.verify_user_password(u["id"], old):
+        return jsonify({"error": "原密码错误"}), 400
+    if len(new) < 6:
+        return jsonify({"error": "新密码至少6位"}), 400
+    user_store.set_password(u["id"], new)
+    return jsonify({"ok": True, "message": "密码已修改，请重新登录"})
+
+# ── 管理员：用户管理（最高权限） ──
+@app.route("/api/admin/users", methods=["GET"])
+def admin_list_users():
+    if not _require_admin():
+        return jsonify({"error": "仅管理员可访问"}), 403
+    users = user_store.list_users()
+    return jsonify({"users": [user_store.public_user(u) for u in users]})
+
+@app.route("/api/admin/users", methods=["POST"])
+def admin_create_user():
+    admin = _require_admin()
+    if not admin:
+        return jsonify({"error": "仅管理员可访问"}), 403
+    data = request.json or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    role = data.get("role", "user")
+    display_name = (data.get("display_name") or "").strip()[:20]
+    if not re.match(r"^[A-Za-z0-9_\-\u4e00-\u9fa5]{2,24}$", username):
+        return jsonify({"error": "用户名需2-24位，仅限中英文、数字、下划线或短横线"}), 400
+    if len(password) < 6:
+        return jsonify({"error": "密码至少6位"}), 400
+    if role not in ("user", "admin"):
+        return jsonify({"error": "角色不合法"}), 400
+    try:
+        user = user_store.create_user(username, password, role, display_name)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, "user": user_store.public_user(user)})
+
+@app.route("/api/admin/users/<int:user_id>/password", methods=["POST"])
+def admin_reset_password(user_id):
+    if not _require_admin():
+        return jsonify({"error": "仅管理员可访问"}), 403
+    data = request.json or {}
+    new_pw = data.get("password") or ""
+    if len(new_pw) < 6:
+        return jsonify({"error": "密码至少6位"}), 400
+    target = user_store.get_user_by_id(user_id)
+    if not target:
+        return jsonify({"error": "用户不存在"}), 404
+    user_store.set_password(user_id, new_pw)
+    return jsonify({"ok": True, "message": f"已重置 {target['username']} 的密码"})
+
+@app.route("/api/admin/users/<int:user_id>/disabled", methods=["POST"])
+def admin_toggle_user(user_id):
+    admin = _require_admin()
+    if not admin:
+        return jsonify({"error": "仅管理员可访问"}), 403
+    data = request.json or {}
+    disabled = bool(data.get("disabled"))
+    target = user_store.get_user_by_id(user_id)
+    if not target:
+        return jsonify({"error": "用户不存在"}), 404
+    if target["id"] == admin["id"]:
+        return jsonify({"error": "不能禁用自己"}), 400
+    user_store.set_disabled(user_id, disabled)
+    return jsonify({"ok": True})
+
+@app.route("/api/admin/users/<int:user_id>", methods=["DELETE"])
+def admin_delete_user(user_id):
+    admin = _require_admin()
+    if not admin:
+        return jsonify({"error": "仅管理员可访问"}), 403
+    target = user_store.get_user_by_id(user_id)
+    if not target:
+        return jsonify({"error": "用户不存在"}), 404
+    if target["id"] == admin["id"]:
+        return jsonify({"error": "不能删除自己"}), 400
+    user_store.delete_user(user_id)
+    return jsonify({"ok": True, "message": f"已删除用户 {target['username']}"})
+
 # Anonymized display codes for training mode
 _CASE_CODES = {}
 
@@ -203,6 +374,29 @@ def _get_display_code(hadm_id):
     if hadm_id not in _CASE_CODES:
         _CASE_CODES[hadm_id] = f"Case-{len(_CASE_CODES)+1:02d}"
     return _CASE_CODES[hadm_id]
+
+def _session_access(sid):
+    """会话归属校验：返回 (session, None) 或 (None, (err_json, status))。
+    普通用户只能访问自己的会话，admin 拥有最高权限可访问全部。"""
+    s = sessions.get(sid)
+    if s is None:
+        return None, ({"error": "会话不存在"}, 400)
+    if not s.get("user_id"):
+        s["user_id"] = user_store.ensure_admin()["id"]
+    u = _current_user()
+    if u is None:
+        return None, ({"error": "未登录"}, 401)
+    if u["role"] != "admin" and s.get("user_id") != u["id"]:
+        return None, ({"error": "无权访问该会话"}, 403)
+    return s, None
+
+def _register_session(s, session_id):
+    """为新会话登记归属（当前登录用户）。"""
+    u = _current_user()
+    s["user_id"] = u["id"] if u else user_store.ensure_admin()["id"]
+    s["username"] = u["username"] if u else "admin"
+    sessions[session_id] = s
+    return s
 
 @app.route("/api/cases")
 def get_cases():
@@ -222,7 +416,10 @@ def get_cases():
 
 @app.route("/api/cases/debug")
 def debug_cases():
-    """Debug endpoint — returns full case info including diagnosis and treatment."""
+    """Debug endpoint — returns full case info including diagnosis and treatment.
+    仅管理员（含标准答案，普通用户禁入）。"""
+    if not _require_admin():
+        return jsonify({"error": "仅管理员可访问此功能"}), 403
     cases = []
     for row in list_cases():
         hid = row[0]
@@ -249,7 +446,9 @@ def debug_cases():
 
 @app.route("/api/cases/<case_id>/full")
 def case_full_detail(case_id):
-    """Return all information for a single case."""
+    """Return all information for a single case. 仅管理员（含诊断/治疗标准答案）。"""
+    if not _require_admin():
+        return jsonify({"error": "仅管理员可访问此功能"}), 403
     from database import query_table, get_hpi_text
     tables = ["patients", "chief_complaints", "oral_examinations", "lab_results",
               "microbiology_results", "pathology_results", "diagnoses",
@@ -377,6 +576,7 @@ def start_chat():
                 "hint": cc.get("chief_complaint", "")[:80],
             },
         }
+        _register_session(sessions[session_id], session_id)
 
         # First patient message
         starter = "医生您好，我来看病。"
@@ -407,6 +607,7 @@ def start_chat():
             "_ctx": None,
             "patient_info": None,
         }
+        _register_session(sessions[session_id], session_id)
         greeting = "您好，我是口腔黏膜病主任医师。请问您有什么口腔问题需要咨询？请详细描述您的症状，包括部位、持续时间、有无疼痛等。"
         sessions[session_id]["history"].append({"role": "doctor", "content": greeting})
         _save_session(session_id)
@@ -425,10 +626,9 @@ def send_message():
     session_id = data.get("session_id", "")
     message = data.get("message", "")
 
-    if session_id not in sessions:
-        return jsonify({"error": "会话已过期，请重新开始"}), 400
-
-    session = sessions[session_id]
+    session, err = _session_access(session_id)
+    if err:
+        return jsonify(err[0]), err[1]
 
     if session["mode"] in ("training", "test"):
         # Student sends message -> Realistic patient responds
@@ -500,7 +700,7 @@ def serve_photo(subpath):
 
 @app.route("/api/chat/history", methods=["GET"])
 def get_history():
-    """返回会话元信息+完整记录。内存缺失时回退到磁盘（只读）。"""
+    """返回会话元信息+完整记录。内存缺失时回退到磁盘（只读）。仅会话归属者/admin可读。"""
     session_id = request.args.get("session_id", "")
     s = sessions.get(session_id)
     if s is None:
@@ -509,6 +709,12 @@ def get_history():
             if os.path.exists(fp):
                 with open(fp, "r", encoding="utf-8") as f:
                     d = json.load(f)
+                owner_id = d.get("user_id") or user_store.ensure_admin()["id"]
+                u = _current_user()
+                if u is None:
+                    return jsonify({"error": "未登录"}), 401
+                if u["role"] != "admin" and owner_id != u["id"]:
+                    return jsonify({"error": "无权访问该会话"}), 403
                 return jsonify({
                     "session_id": session_id,
                     "mode": d.get("mode"),
@@ -522,6 +728,9 @@ def get_history():
         except Exception:
             pass
         return jsonify({"error": "会话不存在"}), 400
+    _, err = _session_access(session_id)
+    if err:
+        return jsonify(err[0]), err[1]
     return jsonify({
         "session_id": session_id,
         "mode": s["mode"],
@@ -535,9 +744,17 @@ def get_history():
 
 @app.route("/api/sessions", methods=["GET"])
 def list_sessions():
-    """历史会话列表（按最近活跃倒序）。"""
+    """历史会话列表（按最近活跃倒序）。普通用户仅见自己的会话，admin 可见全部。"""
+    u = _current_user()
+    if not u:
+        return jsonify({"error": "未登录"}), 401
+    is_admin = u["role"] == "admin"
     out = []
     for sid, s in sessions.items():
+        if not s.get("user_id"):
+            s["user_id"] = user_store.ensure_admin()["id"]
+        if not is_admin and s.get("user_id") != u["id"]:
+            continue
         hid = s.get("case_id")
         mode = s.get("mode", "?")
         out.append({
@@ -547,6 +764,7 @@ def list_sessions():
             "title": s.get("title", "医学生"),
             "case_id": hid,
             "case_display": _get_display_code(hid) if hid else "",
+            "username": s.get("username", ""),
             "started_at": s.get("started_at", ""),
             "last_active": s.get("last_active", 0.0),
             "msg_count": len(s.get("history", [])),
@@ -557,7 +775,26 @@ def list_sessions():
 
 @app.route("/api/sessions/<session_id>", methods=["DELETE"])
 def delete_session(session_id):
-    """删除一个历史会话（内存+磁盘）。"""
+    """删除一个历史会话（内存+磁盘）。仅会话归属者/admin可删。"""
+    if session_id in sessions:
+        _, err = _session_access(session_id)
+        if err:
+            return jsonify(err[0]), err[1]
+    else:
+        # 磁盘回退：读文件归属校验
+        u = _current_user()
+        if not u:
+            return jsonify({"error": "未登录"}), 401
+        try:
+            fp = _session_file(session_id)
+            if os.path.exists(fp):
+                with open(fp, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                owner_id = d.get("user_id") or user_store.ensure_admin()["id"]
+                if u["role"] != "admin" and owner_id != u["id"]:
+                    return jsonify({"error": "无权访问该会话"}), 403
+        except Exception:
+            pass
     sessions.pop(session_id, None)
     try:
         os.remove(_session_file(session_id))
@@ -573,10 +810,13 @@ def request_examination():
     tool_name = data.get("tool", "")
     params = data.get("params", {})
 
-    if session_id not in sessions or sessions[session_id]["mode"] not in ("training", "test"):
+    session, err = _session_access(session_id)
+    if err:
+        return jsonify(err[0]), err[1]
+    if session["mode"] not in ("training", "test"):
         return jsonify({"error": "会话已过期，请重新选择病例开始问诊"}), 400
 
-    hid = sessions[session_id]["case_id"]
+    hid = session["case_id"]
 
     # Map tool names to DB tables and formatters
     from tool_executors import (
@@ -628,10 +868,12 @@ def evaluate():
     """Score student diagnosis against ground truth."""
     data = request.json
     session_id = data.get("session_id", "")
-    if session_id not in sessions or sessions[session_id]["mode"] not in ("training", "test"):
+    session, err = _session_access(session_id)
+    if err:
+        return jsonify(err[0]), err[1]
+    if session["mode"] not in ("training", "test"):
         return jsonify({"error": "仅训练/测试模式支持评估"}), 400
 
-    session = sessions[session_id]
     hid = session["case_id"]
 
     student_diag = data.get("diagnosis", "").strip()
@@ -828,8 +1070,11 @@ def evaluate():
     show_ref_only = title in ("副主任医师", "主任医师")  # Only show reference, no scores
 
     if is_test:
+        u = _current_user()
         test_record = {
             "session_id": session_id,
+            "user_id": u["id"] if u else None,
+            "username": u["username"] if u else "",
             "case_id": hid,
             "title": title,
             "started_at": session.get("started_at", ""),
@@ -878,10 +1123,12 @@ def tutor_review():
     """Clinical tutor agent reviews student's performance."""
     data = request.json
     session_id = data.get("session_id", "")
-    if session_id not in sessions or sessions[session_id]["mode"] != "training":
+    session, err = _session_access(session_id)
+    if err:
+        return jsonify(err[0]), err[1]
+    if session["mode"] != "training":
         return jsonify({"error": "仅训练模式支持导师点评"}), 400
 
-    session = sessions[session_id]
     hid = session["case_id"]
     history = session["history"]
 

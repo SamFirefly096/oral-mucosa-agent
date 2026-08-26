@@ -1,36 +1,174 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>口腔黏膜病AI诊断Agent — 登录</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'Microsoft YaHei',sans-serif;background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);min-height:100vh;display:flex;align-items:center;justify-content:center}
-.card{background:#fff;border-radius:16px;padding:40px;width:90%;max-width:400px;box-shadow:0 20px 60px rgba(0,0,0,.3);text-align:center}
-.card .icon{font-size:48px;margin-bottom:16px}
-.card h2{font-size:20px;color:#1a1a2e;margin-bottom:8px}
-.card p{font-size:13px;color:#888;margin-bottom:24px}
-.card input{width:100%;padding:14px;border:1.5px solid #d0d5dd;border-radius:10px;font-size:16px;text-align:center;letter-spacing:4px;outline:none}
-.card input:focus{border-color:#2563eb}
-.card button{width:100%;padding:14px;margin-top:16px;background:#2563eb;color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer}
-.card button:hover{background:#1d4ed8}
-.card .error{color:#dc2626;font-size:12px;margin-top:8px;display:none}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;
+  background:linear-gradient(160deg,#0f2547 0%,#173e8f 45%,#2563eb 100%);
+  min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;position:relative;overflow:hidden}
+body::before{content:'';position:absolute;width:420px;height:420px;border-radius:50%;
+  background:radial-gradient(circle,rgba(255,255,255,.10),transparent 70%);top:-120px;right:-120px}
+body::after{content:'';position:absolute;width:360px;height:360px;border-radius:50%;
+  background:radial-gradient(circle,rgba(56,189,248,.18),transparent 70%);bottom:-140px;left:-100px}
+
+.wrap{position:relative;z-index:1;width:100%;max-width:420px;text-align:center}
+.logo{width:74px;height:74px;margin:0 auto 14px;background:rgba(255,255,255,.95);border-radius:22px;
+  display:flex;align-items:center;justify-content:center;font-size:34px;line-height:1;box-shadow:0 12px 32px rgba(0,0,0,.28)}
+h1{color:#fff;font-size:22px;font-weight:700;letter-spacing:.5px;text-shadow:0 2px 8px rgba(0,0,0,.2)}
+.sub{color:rgba(255,255,255,.75);font-size:12px;margin-top:6px;letter-spacing:1px}
+
+.card{margin-top:26px;background:rgba(255,255,255,.98);border-radius:20px;padding:22px 22px 18px;
+  box-shadow:0 20px 48px rgba(0,0,0,.30);text-align:left}
+.seg{display:flex;background:#eef2f8;border-radius:12px;padding:4px;margin-bottom:18px}
+.seg button{flex:1;border:none;background:transparent;border-radius:9px;padding:9px 0;font-size:14px;font-weight:600;color:#64748b;cursor:pointer;transition:all .2s}
+.seg button.on{background:#fff;color:#1d4ed8;box-shadow:0 2px 6px rgba(37,99,235,.18)}
+
+.field{margin-bottom:14px}
+.field label{display:block;font-size:12px;font-weight:600;color:#475569;margin-bottom:6px}
+.field input{width:100%;height:48px;padding:0 14px;border:1.5px solid #dfe5ee;border-radius:12px;font-size:16px;outline:none;background:#f8fafc;transition:all .2s}
+.field input:focus{border-color:#2563eb;background:#fff;box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+
+.btn{width:100%;height:48px;border:none;border-radius:12px;background:linear-gradient(135deg,#2563eb,#3b82f6);
+  color:#fff;font-size:16px;font-weight:700;cursor:pointer;margin-top:6px;transition:all .2s;
+  display:flex;align-items:center;justify-content:center;gap:8px}
+.btn:active{transform:scale(.985)}
+.btn:disabled{opacity:.6}
+.btn .sp{display:none;width:16px;height:16px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}
+.btn.loading .sp{display:inline-block}
+
+.err{display:none;background:#fef2f2;border:1px solid #fecaca;color:#dc2626;font-size:12px;border-radius:10px;padding:9px 12px;margin-bottom:12px;line-height:1.5}
+.err.show{display:block}
+.tip{margin-top:16px;color:rgba(255,255,255,.6);font-size:11px;line-height:1.7}
+.tip b{color:rgba(255,255,255,.9);font-weight:600}
+@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
-<div class="card">
-<div class="icon">&#x1F9B7;</div>
-<h2>口腔黏膜病AI诊断Agent</h2>
-<p>请输入访问密码</p>
-<input type="password" id="pw" placeholder="········" onkeypress="if(event.key==='Enter')login()">
-<button onclick="login()">登 录</button>
-<div class="error" id="err">密码错误，请重试</div>
+<div class="wrap">
+  <div class="logo">&#x1F9B7;</div>
+  <h1>口腔黏膜病AI诊断Agent</h1>
+  <p class="sub">中西医结合 · DeepSeek 智能诊疗</p>
+
+  <div class="card">
+    <div class="seg">
+      <button id="tabLogin" class="on" onclick="switchTab('login')">登 录</button>
+      <button id="tabReg" onclick="switchTab('reg')">注册账号</button>
+    </div>
+
+    <div id="errBox" class="err"></div>
+
+    <div id="loginForm">
+      <div class="field"><label>用户名</label>
+        <input id="lgUser" type="text" placeholder="输入用户名" autocomplete="username"></div>
+      <div class="field"><label>密码</label>
+        <input id="lgPw" type="password" placeholder="输入密码" autocomplete="current-password"></div>
+      <button class="btn" id="lgBtn" onclick="doLogin()"><span class="sp"></span>登 录</button>
+    </div>
+
+    <div id="regForm" style="display:none">
+      <div class="field"><label>用户名（2-24位，中英文/数字/下划线）</label>
+        <input id="rgUser" type="text" placeholder="设置用户名" autocomplete="username"></div>
+      <div class="field"><label>显示名称（可选，如：李医生）</label>
+        <input id="rgName" type="text" placeholder="昵称/姓名"></div>
+      <div class="field"><label>密码（至少6位）</label>
+        <input id="rgPw" type="password" placeholder="设置密码" autocomplete="new-password"></div>
+      <div class="field"><label>确认密码</label>
+        <input id="rgPw2" type="password" placeholder="再次输入密码" autocomplete="new-password"></div>
+      <button class="btn" id="rgBtn" onclick="doRegister()"><span class="sp"></span>注册并登录</button>
+    </div>
+  </div>
+
+  <p class="tip">管理员账号由系统内置，拥有最高权限。<br>新用户请先注册，各用户会话记录相互独立。</p>
 </div>
+
 <script>
-function login(){
-localStorage.setItem('agent_pw',document.getElementById('pw').value);
-window.location.href='/?pw='+document.getElementById('pw').value;
-}
+(function(){
+  // 若主页面携带令牌（旧链接 ?pw= 已被后端转成 ?t=）则直接进入
+  var t = new URLSearchParams(location.search).get("t");
+  if (t) {
+    localStorage.setItem("om_token", t);
+    location.replace("/");
+    return;
+  }
+  if (localStorage.getItem("om_token")) {
+    fetch("/api/auth/me", { headers: { "X-Auth-Token": localStorage.getItem("om_token") } })
+      .then(function(r){ if (r.ok) location.replace("/"); })
+      .catch(function(){});
+  }
+
+  window.switchTab = function(k){
+    document.getElementById("tabLogin").classList.toggle("on", k === "login");
+    document.getElementById("tabReg").classList.toggle("on", k === "reg");
+    document.getElementById("loginForm").style.display = k === "login" ? "" : "none";
+    document.getElementById("regForm").style.display = k === "reg" ? "" : "none";
+    hideErr();
+  };
+
+  function showErr(msg){ var e = document.getElementById("errBox"); e.textContent = msg; e.classList.add("show"); }
+  function hideErr(){ document.getElementById("errBox").classList.remove("show"); }
+
+  function setLoading(btn, loading){
+    btn.disabled = loading;
+    btn.classList.toggle("loading", loading);
+  }
+
+  function finish(token, user){
+    localStorage.setItem("om_token", token);
+    try { localStorage.setItem("om_user", JSON.stringify(user)); } catch(e){}
+    location.replace("/");
+  }
+
+  window.doLogin = function(){
+    var u = document.getElementById("lgUser").value.trim();
+    var p = document.getElementById("lgPw").value;
+    if (!u || !p){ showErr("请输入用户名和密码"); return; }
+    var btn = document.getElementById("lgBtn");
+    setLoading(btn, true); hideErr();
+    fetch("/api/auth/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: u, password: p })
+    })
+      .then(function(r){ return r.json().then(function(d){ return { ok: r.ok, d: d }; }); })
+      .then(function(res){
+        if (!res.ok){ showErr(res.d.error || "登录失败"); setLoading(btn, false); return; }
+        finish(res.d.token, res.d.user);
+      })
+      .catch(function(){ showErr("网络错误，请稍后重试"); setLoading(btn, false); });
+  };
+
+  window.doRegister = function(){
+    var u = document.getElementById("rgUser").value.trim();
+    var n = document.getElementById("rgName").value.trim();
+    var p = document.getElementById("rgPw").value;
+    var p2 = document.getElementById("rgPw2").value;
+    if (!u){ showErr("请输入用户名"); return; }
+    if (p.length < 6){ showErr("密码至少6位"); return; }
+    if (p !== p2){ showErr("两次输入的密码不一致"); return; }
+    var btn = document.getElementById("rgBtn");
+    setLoading(btn, true); hideErr();
+    fetch("/api/auth/register", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: u, password: p, display_name: n })
+    })
+      .then(function(r){ return r.json().then(function(d){ return { ok: r.ok, d: d }; }); })
+      .then(function(res){
+        if (!res.ok){ showErr(res.d.error || "注册失败"); setLoading(btn, false); return; }
+        finish(res.d.token, res.d.user);
+      })
+      .catch(function(){ showErr("网络错误，请稍后重试"); setLoading(btn, false); });
+  };
+
+  ["lgUser","lgPw"].forEach(function(id){
+    document.getElementById(id).addEventListener("keydown", function(e){ if (e.key === "Enter") doLogin(); });
+  });
+  ["rgUser","rgName","rgPw","rgPw2"].forEach(function(id){
+    document.getElementById(id).addEventListener("keydown", function(e){ if (e.key === "Enter") doRegister(); });
+  });
+})();
 </script>
 </body>
 </html>

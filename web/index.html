@@ -2,369 +2,629 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#12306e">
 <title>口腔黏膜病AI诊断Agent</title>
 <style>
-*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+/* ───────────── 设计变量 ───────────── */
+:root{
+  --primary:#2563eb; --primary-d:#1d4ed8; --primary-l:#e8f0ff;
+  --ink:#17233d; --muted:#64748b; --line:#e5eaf2; --bg:#f1f4f9; --card:#fff;
+  --green:#12b76a; --green-bg:#f0fdf6; --amber:#d97706; --amber-bg:#fef8ec;
+  --red:#e11d48; --purple:#7c3aed; --purple-bg:#f6f2ff;
+  --radius:14px;
+  --vh:100dvh;
+  --vv-top:0px;
+}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden}
+body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--ink)}
 
-:root{--blue:#2563eb;--blue-dark:#1d4ed8;--bg:#f0f2f5;--white:#fff;--text:#1a1a2e;--gray:#666;--border:#e5e7eb;--radius:12px}
+/* 应用外壳：位置固定 + visualViewport 驱动高度，键盘弹出时正确收缩 */
+.app{position:fixed;top:0;left:0;right:0;height:var(--vh);transform:translateY(var(--vv-top));
+  display:flex;flex-direction:column;background:var(--bg)}
 
-body{font-family:'Microsoft YaHei','PingFang SC',-apple-system,sans-serif;background:var(--bg);min-height:100vh;min-height:100dvh}
+/* ───────────── 顶部栏 ───────────── */
+.topbar{background:linear-gradient(130deg,#0d2b66 0%,#16408f 55%,#2563eb 115%);
+  color:#fff;padding:calc(8px + env(safe-area-inset-top)) 14px 8px;display:flex;align-items:center;
+  justify-content:space-between;flex-shrink:0;box-shadow:0 2px 12px rgba(13,43,102,.28);z-index:30}
+.brand{display:flex;align-items:center;gap:9px;min-width:0}
+.brand .logo{width:36px;height:36px;background:rgba(255,255,255,.95);border-radius:10px;
+  display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0;box-shadow:0 3px 8px rgba(0,0,0,.22)}
+.brand-txt h1{font-size:16px;font-weight:700;white-space:nowrap;letter-spacing:.3px}
+.brand-txt .sub{font-size:10px;opacity:.72;margin-top:1px;letter-spacing:1px}
+.hdr-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.hbtn{background:rgba(255,255,255,.13);border:1px solid rgba(255,255,255,.22);color:#fff;border-radius:10px;
+  padding:7px 11px;font-size:12px;font-weight:600;display:flex;align-items:center;gap:5px;cursor:pointer}
+.hbtn:active{background:rgba(255,255,255,.25)}
+.avatar{width:34px;height:34px;border-radius:50%;border:1.5px solid rgba(255,255,255,.55);
+  background:linear-gradient(135deg,#fbbf24,#f59e0b);color:#7c2d12;font-size:15px;font-weight:800;
+  display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}
 
-/* Header */
-.header{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);color:#fff;padding:12px 20px;display:flex;align-items:center;justify-content:space-between;box-shadow:0 2px 8px rgba(0,0,0,.15);position:sticky;top:0;z-index:50}
-.header h1{font-size:18px;font-weight:600}
-.header .subtitle{font-size:10px;opacity:.8;margin-top:2px}
-.header .svc{font-size:10px;opacity:.7;display:flex;align-items:center;gap:4px;flex-shrink:0;margin-left:12px}
+/* ───────────── 主体 ───────────── */
+.main{flex:1;min-height:0;display:flex;flex-direction:column;width:100%;max-width:900px;margin:0 auto;padding:0}
+.tabs{display:none}
+.tabs .tab{flex:1;padding:13px 8px;text-align:center;cursor:pointer;font-size:14px;font-weight:600;border:none;
+  background:transparent;color:var(--muted);display:flex;flex-direction:column;align-items:center;gap:2px}
+.tabs .tab .tico{font-size:19px;line-height:1}
+.tabs .tab.on{color:var(--primary);font-weight:700;position:relative}
+.tabs .tab.on::after{content:'';position:absolute;bottom:4px;left:50%;transform:translateX(-50%);
+  width:22px;height:3px;border-radius:3px;background:var(--primary)}
 
-/* Container */
-.container{max-width:1100px;margin:12px auto;padding:0 12px}
+.panel{flex:1;min-height:0;display:flex;flex-direction:column;background:var(--card);
+  border-radius:var(--radius) var(--radius) 0 0;box-shadow:0 -2px 16px rgba(23,35,61,.06);position:relative;overflow:hidden}
 
-/* Tabs */
-.tabs{display:flex;background:var(--white);border-radius:var(--radius) var(--radius) 0 0;overflow:hidden;box-shadow:0 -1px 4px rgba(0,0,0,.05)}
-.tab{flex:1;padding:12px 16px;text-align:center;cursor:pointer;font-size:14px;font-weight:600;border:none;background:#f8f9fb;color:#888;transition:all .2s;border-bottom:3px solid transparent}
-.tab.active{background:var(--white);color:var(--text);border-bottom-color:var(--blue)}
-.tab .icon{font-size:18px;display:block;margin-bottom:2px}
+/* ───────────── 病例选择条 ───────────── */
+.case-bar{padding:9px 12px;background:var(--amber-bg);border-bottom:1px solid #f5e3b8;display:flex;
+  flex-direction:column;gap:8px;flex-shrink:0}
+.case-row1{display:flex;gap:6px;align-items:center}
+.case-row1 .lbl{font-size:11px;font-weight:700;color:#8a5a06;white-space:nowrap;flex-shrink:0}
+.case-row1 select{flex:1;min-width:0;height:38px;padding:0 10px;border:1.5px solid #ecd9a9;border-radius:10px;
+  font-size:14px;background:#fff;color:var(--ink);outline:none}
+.case-row2{display:flex;gap:6px;align-items:center}
+.chip{display:inline-flex;align-items:center;gap:4px;border:1.5px solid #ecd9a9;background:#fffef8;color:#8a5a06;
+  font-size:11px;padding:7px 10px;border-radius:10px;cursor:pointer;white-space:nowrap}
+.chip input{width:14px;height:14px;accent-color:var(--amber)}
 
-/* Panel */
-.panel{background:var(--white);border-radius:0 0 var(--radius) var(--radius);box-shadow:0 2px 12px rgba(0,0,0,.08);overflow:hidden}
+/* ───────────── 状态栏 ───────────── */
+.status-bar{display:none;align-items:center;gap:8px;padding:7px 12px;background:#f7f9fd;
+  border-bottom:1px solid var(--line);font-size:11px;color:var(--muted);flex-shrink:0}
+.status-bar .dot{width:8px;height:8px;border-radius:50%;background:#4ade80;flex-shrink:0;box-shadow:0 0 0 3px rgba(74,222,128,.2)}
+.status-bar .case-lbl{color:#8a5a06;font-weight:600;margin-left:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:46%}
+.end-btn{border:none;background:#fde8e8;color:#b91c1c;font-size:11px;font-weight:700;padding:6px 12px;
+  border-radius:9px;cursor:pointer;flex-shrink:0}
 
-/* Chat */
-.chat-area{height:420px;overflow-y:auto;padding:16px;scroll-behavior:smooth}
-.chat-area.training{background:linear-gradient(135deg,#fefce8 0%,#fafbfc 100%)}
-.chat-area.consult{background:linear-gradient(135deg,#eff6ff 0%,#fafbfc 100%)}
+/* ───────────── 聊天区 ───────────── */
+.chat-area{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 12px 8px;scroll-behavior:smooth}
+.chat-area.training{background:linear-gradient(180deg,#fbfbff 0%,#f4f7fc 100%)}
+.chat-area.consult{background:linear-gradient(180deg,#f0f6ff 0%,#f4f7fc 100%)}
 
-.message{display:flex;margin-bottom:10px;animation:fadeIn .3s}
-.message.student{justify-content:flex-end}
-.message.patient,.message.doctor{justify-content:flex-start}
-.message.system{justify-content:flex-start}
+.msg{display:flex;margin-bottom:12px;animation:up .25s ease}
+.msg .mcol{display:flex;flex-direction:column;max-width:82%;min-width:0}
+.msg.right{justify-content:flex-end}
+.msg.right .mcol{align-items:flex-end}
+.msg.left .mcol{align-items:flex-start}
+.msg .role{font-size:10px;color:#94a3b8;margin:0 4px 3px;font-weight:600}
+.msg .bubble{position:relative;padding:10px 13px;border-radius:14px;font-size:14.5px;line-height:1.72;word-wrap:break-word;
+  white-space:pre-wrap}
+.msg.right .bubble{background:linear-gradient(135deg,#2563eb,#2f6fed);color:#fff;border-bottom-right-radius:4px;
+  box-shadow:0 2px 8px rgba(37,99,235,.22)}
+.msg.left .bubble{background:#fff;color:var(--ink);border:1.5px solid var(--line);border-bottom-left-radius:4px;
+  box-shadow:0 1px 4px rgba(23,35,61,.05)}
+.msg.doctor .bubble{background:var(--primary-l);border-color:#c6d9ff;color:#0f2f6f}
+.msg.system .bubble{background:var(--purple-bg);border-color:#ddd0f7;color:#4c1d95;font-size:12.5px}
+.msg.system .role{color:#9b86d6}
+.bubble h4{font-size:14px;margin:4px 0;color:inherit}
+.bubble ul{margin:4px 0 4px 18px;padding:0}
+.bubble li{margin:2px 0}
+.bubble code{background:rgba(0,0,0,.07);padding:1px 5px;border-radius:4px;font-size:12.5px}
+.bubble pre{white-space:pre-wrap;font-family:inherit;margin:0;font-size:12.5px}
+.msg.system .bubble pre{font-size:12px}
+.msg .voice-btn{margin-top:4px;border:1px solid var(--line);background:#fff;color:var(--muted);font-size:11px;
+  cursor:pointer;padding:3px 9px;border-radius:999px;display:inline-flex;align-items:center;gap:3px}
+.msg .voice-btn.speaking{color:var(--primary);border-color:var(--primary)}
+.msg .voice-btn:disabled{opacity:.4}
 
-.bubble{max-width:72%;padding:10px 14px;border-radius:14px;font-size:13px;line-height:1.65;word-wrap:break-word}
-.message.student .bubble{background:var(--blue);color:#fff;border-bottom-right-radius:4px}
-.message.patient .bubble{background:#fff;color:#333;border:1.5px solid #e0e4ea;border-bottom-left-radius:4px}
-.message.doctor .bubble{background:#dbeafe;color:var(--text);border:1.5px solid #bfdbfe;border-bottom-left-radius:4px}
-.message.system .bubble{background:#f5f3ff;color:#4c1d95;border:1.5px solid #c4b5fd;font-size:11px;max-width:90%}
-.message.system .bubble .role-label{color:#7c3aed}
-.bubble .role-label{font-size:9px;font-weight:700;margin-bottom:3px;opacity:.7}
+.empty-state{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#94a3b8;padding:24px}
+.empty-state .eicon{font-size:46px;margin-bottom:12px}
+.empty-state .etitle{font-size:16px;font-weight:700;color:#64748b;margin-bottom:6px}
+.empty-state p{font-size:12.5px;line-height:1.7;max-width:280px}
 
-.bubble h4{font-size:13px;margin:4px 0;color:inherit}
-.bubble ul{margin:4px 0 4px 16px;padding:0}
-.bubble li{margin:2px 0;font-size:12px}
-.bubble code{background:rgba(0,0,0,.06);padding:1px 4px;border-radius:3px;font-size:11px}
-.bubble strong{font-weight:700}
+/* ───────────── 检查工具箱（横向滚动） ───────────── */
+.exam-bar{display:none;background:#f8fafc;border-top:1px solid var(--line);padding:8px 10px;
+  flex-shrink:0;overflow-x:auto;gap:6px;align-items:center;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.exam-bar::-webkit-scrollbar{display:none}
+.exam-bar .tt{font-size:10.5px;font-weight:700;color:var(--muted);flex-shrink:0}
+.btn-exam{flex-shrink:0;padding:7px 12px;font-size:12px;font-weight:600;border:1.5px solid #d8c9f5;background:#faf7ff;
+  color:#5b21b6;border-radius:999px;cursor:pointer;white-space:nowrap}
+.btn-exam:active{background:#ede9fe}
+.btn-exam.on{background:#7c3aed;color:#fff;border-color:#7c3aed}
+.exam-dd{position:relative;flex-shrink:0}
+.exam-dd .menu{display:none;position:absolute;bottom:calc(100% + 6px);left:0;z-index:60;background:#fff;
+  border:1.5px solid var(--line);border-radius:12px;padding:10px;min-width:200px;box-shadow:0 8px 28px rgba(23,35,61,.18)}
+.exam-dd .menu.show{display:block}
+.exam-dd .menu label{display:flex;align-items:center;gap:7px;padding:6px 4px;font-size:13px;cursor:pointer;color:var(--ink)}
+.exam-dd .menu input{width:15px;height:15px;accent-color:#7c3aed}
+.exam-dd .menu .ok{width:100%;margin-top:6px;padding:8px;border:none;border-radius:8px;background:#7c3aed;color:#fff;
+  font-size:12px;font-weight:700;cursor:pointer}
 
-/* Input */
-.input-area{display:flex;padding:10px 14px;border-top:1px solid var(--border);background:var(--white);gap:6px;align-items:center}
-.input-area input{flex:1;padding:10px 14px;border:1.5px solid #d0d5dd;border-radius:20px;font-size:13px;outline:none;min-width:0}
-.input-area input:focus{border-color:var(--blue)}
-.btn{padding:8px 16px;border:none;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;transition:all .2s;white-space:nowrap}
-.btn-primary{background:var(--blue);color:#fff}
-.btn-primary:hover{background:var(--blue-dark)}
-.btn-primary:disabled{background:#94a3b8;cursor:not-allowed}
-.btn-outline{background:var(--white);color:var(--blue);border:1.5px solid var(--blue)}
-.btn-outline:hover{background:#eff6ff}
-.btn-warn{background:#fef3c7;color:#92400e;border:1.5px solid #fcd34d}
-.btn-warn:hover{background:#fde68a}
-
-/* Case selector */
-.case-selector{padding:10px 14px;background:#fffbeb;border-bottom:1px solid #fde68a;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.case-selector label{font-size:11px;font-weight:600;color:#92400e;white-space:nowrap}
-.case-selector select{padding:7px 10px;border:1.5px solid #fcd34d;border-radius:8px;font-size:12px;background:#fff;min-width:160px;max-width:200px}
-
-/* Status bar */
-.status-bar{display:none;align-items:center;gap:10px;padding:6px 14px;background:#f8f9fb;border-bottom:1px solid var(--border);font-size:11px;color:var(--gray)}
-.status-bar .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
-.status-bar .dot.active{background:#4ade80}
-.status-bar .dot.idle{background:#fbbf24}
-.status-bar span:last-child{margin-left:auto;font-weight:600}
-
-/* Exam toolbar */
-.exam-toolbar{display:none;padding:8px 14px;border-top:1px solid var(--border);background:#f8f9fb;flex-wrap:wrap;align-items:center;gap:5px}
-.exam-toolbar .tt{font-size:11px;font-weight:700;color:var(--gray)}
-.btn-exam{padding:5px 10px;font-size:10px;font-weight:600;border:1.5px solid #c4b5fd;background:#faf5ff;color:#5b21b6;border-radius:14px;cursor:pointer;transition:all .15s}
-.btn-exam:hover{background:#ede9fe;border-color:#8b5cf6}
-
-/* Dropdown */
-.dropdown{position:relative;display:inline-block}
-.dropdown-menu{display:none;position:absolute;bottom:100%;left:0;z-index:50;background:#fff;border:1.5px solid #d0d5dd;border-radius:8px;padding:8px;min-width:180px;box-shadow:0 4px 16px rgba(0,0,0,.12);max-height:300px;overflow-y:auto}
-.dropdown-menu.show{display:block}
-.dropdown-menu label{display:block;padding:3px 6px;font-size:11px;cursor:pointer;border-radius:4px}
-.dropdown-menu label:hover{background:#f5f3ff}
-.dropdown-menu .dd-confirm{position:sticky;bottom:0;background:#fff;padding-top:6px;border-top:1px solid #eee;margin-top:4px}
-
-/* Score panel */
-.score-panel{display:none;padding:14px;border-top:2px solid var(--blue);background:#f8faff;max-height:55vh;overflow-y:auto;-webkit-overflow-scrolling:touch}
+/* ───────────── 评分面板 ───────────── */
+.score-panel{display:none;padding:13px;border-top:2px solid var(--primary);background:#f7faff;
+  max-height:52%;overflow-y:auto;-webkit-overflow-scrolling:touch;flex-shrink:1;min-height:0}
 .score-panel.show{display:block}
-.score-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:10px}
-.score-item{background:#fff;padding:10px;border-radius:8px;text-align:center;border:1px solid #e0e4ea}
-.score-item .score-val{font-size:20px;font-weight:700}
-.score-item .score-lbl{font-size:10px;color:#666;margin-top:2px}
-.score-item.great{background:#f0fdf4;border-color:#86efac}
-.score-item.good{background:#eff6ff;border-color:#93c5fd}
-.score-item.ok{background:#fffbeb;border-color:#fcd34d}
-.score-item.poor{background:#fef2f2;border-color:#fca5a5}
-
-.grade-badge{display:inline-block;padding:3px 14px;border-radius:12px;font-size:16px;font-weight:800;margin-right:8px}
+.sp-head{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.sp-head h3{font-size:15px;color:var(--ink)}
+.grade-badge{font-size:15px;font-weight:800;padding:3px 12px;border-radius:999px}
 .grade-A{background:#f0fdf4;color:#15803d}
 .grade-B{background:#eff6ff;color:#1d4ed8}
 .grade-C{background:#fffbeb;color:#a16207}
 .grade-D{background:#fef2f2;color:#dc2626}
-
-.truth-box{margin-top:10px;padding:10px;background:#f0fdf4;border-radius:8px;border:1px solid #bbf7d0;font-size:12px;line-height:1.7}
+.sp-total{font-size:14px;font-weight:700;color:var(--ink)}
+.score-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:10px}
+.score-item{background:#fff;padding:10px 8px;border-radius:10px;text-align:center;border:1px solid var(--line)}
+.score-item .v{font-size:20px;font-weight:800}
+.score-item .l{font-size:10px;color:var(--muted);margin-top:2px}
+.score-item.great{background:#f0fdf6;border-color:#b7ebcd}
+.score-item.good{background:#eff6ff;border-color:#bfdbfe}
+.score-item.ok{background:#fffbeb;border-color:#fde68a}
+.score-item.poor{background:#fef2f2;border-color:#fecaca}
+.truth-box{margin-top:8px;padding:11px;background:#f0fdf6;border-radius:10px;border:1px solid #b7ebcd;font-size:12.5px;line-height:1.75}
 .truth-box h4{font-size:13px;color:#166534;margin-bottom:4px}
+.tutor-box{display:none;margin-top:9px;padding:11px;background:#fefce8;border-radius:10px;border:1px solid #fde68a;font-size:13px;line-height:1.75;max-height:220px;overflow-y:auto}
+.w-btn{margin-top:9px;width:100%;padding:10px;border:1.5px solid var(--primary);background:#fff;color:var(--primary);
+  border-radius:10px;font-size:13px;font-weight:700;cursor:pointer}
 
-/* Modal */
-.modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:100;justify-content:center;align-items:center;padding:20px}
-.modal-overlay.show{display:flex}
-.modal{background:#fff;border-radius:16px;padding:24px;width:100%;max-width:560px;max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.2)}
-.modal h3{font-size:17px;margin-bottom:12px;color:var(--text)}
-.modal label{display:block;font-size:12px;font-weight:600;color:#333;margin-bottom:3px;margin-top:12px}
-.modal textarea,.modal input{width:100%;padding:10px 12px;border:1.5px solid #d0d5dd;border-radius:8px;font-size:13px;font-family:inherit;resize:vertical}
-.modal textarea{min-height:60px}
-.modal textarea:focus,.modal input:focus{border-color:var(--blue);outline:none}
-.modal .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end;flex-wrap:wrap}
+/* ───────────── 输入区 ───────────── */
+.composer{display:flex;align-items:flex-end;gap:8px;padding:8px 10px calc(6px);border-top:1px solid var(--line);
+  background:#fff;flex-shrink:0;position:relative}
+.composer input{flex:1;min-width:0;height:44px;padding:0 14px;border:1.5px solid #d8dfe8;border-radius:999px;
+  font-size:16px;outline:none;background:#f7f9fc;transition:all .2s}
+.composer input:focus{border-color:var(--primary);background:#fff;box-shadow:0 0 0 3px rgba(37,99,235,.10)}
+.composer input:disabled{opacity:.65}
+.mic-btn{width:44px;height:44px;border:1.5px solid #d8dfe8;border-radius:50%;background:#fff;font-size:19px;
+  cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:var(--primary);transition:all .2s}
+.mic-btn.listening{background:#fee2e2;border-color:#fca5a5;color:#b91c1c;animation:pulse 1.2s ease infinite}
+.mic-btn.off{opacity:.38;color:#94a3b8}
+.send-btn{height:44px;padding:0 18px;border:none;border-radius:999px;background:linear-gradient(135deg,#2563eb,#3b82f6);
+  color:#fff;font-size:14px;font-weight:700;cursor:pointer;flex-shrink:0;box-shadow:0 3px 10px rgba(37,99,235,.25)}
+.send-btn:disabled{opacity:.5;box-shadow:none}
+.send-btn:active{transform:scale(.97)}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(225,29,72,.4)}50%{box-shadow:0 0 0 8px rgba(225,29,72,0)}}
 
-/* Empty state */
-.empty-state{text-align:center;padding:40px 16px;color:#999}
-.empty-state .icon{font-size:36px;margin-bottom:8px}
+/* ───────────── 底部Tab（移动端） ───────────── */
+.bottom-tabs{display:flex;background:#fff;border-top:1px solid var(--line);
+  padding-bottom:env(safe-area-inset-bottom);flex-shrink:0;z-index:30}
+.bottom-tabs .btab{flex:1;border:none;background:transparent;padding:8px 4px;display:flex;flex-direction:column;
+  align-items:center;gap:1px;font-size:11px;color:#94a3b8;cursor:pointer}
+.bottom-tabs .btab .tico{font-size:21px;line-height:1.2}
+.bottom-tabs .btab.on{color:var(--primary);font-weight:700}
+.bottom-tabs .btab.on .tico{transform:translateY(-1px)}
 
-/* Spinner */
-.spinner{width:32px;height:32px;border:3px solid #e0e4ea;border-top-color:var(--blue);border-radius:50%;animation:spin .7s linear infinite;margin:0 auto}
+/* ───────────── 弹层（底部卡片） ───────────── */
+.sheet-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(15,23,42,.5);
+  z-index:100;align-items:flex-end;justify-content:center;backdrop-filter:blur(2px)}
+.sheet-overlay.show{display:flex}
+.sheet{width:100%;max-width:640px;max-height:88dvh;background:#fff;border-radius:18px 18px 0 0;
+  display:flex;flex-direction:column;overflow:hidden;animation:rise .28s ease;padding-bottom:env(safe-area-inset-bottom)}
+.sheet-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px 10px;border-bottom:1px solid var(--line);flex-shrink:0}
+.sheet-head h3{font-size:16px;color:var(--ink)}
+.sheet-head .x{border:none;background:#f1f4f9;color:var(--muted);width:30px;height:30px;border-radius:50%;
+  font-size:13px;cursor:pointer}
+.sheet-body{overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 16px;flex:1;min-height:0}
+.sheet-foot{display:flex;gap:8px;padding:10px 16px;border-top:1px solid var(--line);flex-shrink:0;justify-content:flex-end}
+.grip{width:38px;height:4px;border-radius:2px;background:#e2e8f0;margin:8px auto 0;flex-shrink:0}
+.b-btn{padding:10px 18px;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer}
+.b-btn.primary{background:var(--primary);color:#fff}
+.b-btn.ghost{background:#f1f4f9;color:var(--muted)}
+.b-btn.danger{background:#fde8e8;color:#b91c1c}
+.b-btn.block{width:100%}
+.sheet label.lb{display:block;font-size:12px;font-weight:700;color:#475569;margin:12px 0 5px}
+.sheet input,.sheet textarea{width:100%;padding:11px 12px;border:1.5px solid #d8dfe8;border-radius:10px;
+  font-size:14.5px;font-family:inherit;outline:none;background:#f8fafc}
+.sheet input:focus,.sheet textarea:focus{border-color:var(--primary);background:#fff}
+.sheet textarea{min-height:70px;resize:vertical}
+@keyframes rise{from{transform:translateY(30px);opacity:.4}to{transform:translateY(0);opacity:1}}
+
+/* ───────────── 历史会话 ───────────── */
+.hist-row{display:flex;align-items:center;gap:9px;padding:11px 6px;border-bottom:1px solid #f0f3f8;font-size:13px}
+.hist-badge{flex-shrink:0;padding:3px 9px;border-radius:999px;font-size:10px;font-weight:700;white-space:nowrap}
+.hist-badge.consult{background:#dbeafe;color:#1d4ed8}
+.hist-badge.other{background:#fdf0da;color:#8a5a06}
+.hist-main{flex:1;min-width:0}
+.hist-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hist-meta{color:#94a3b8;font-size:10.5px;margin-top:2px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.hist-user{background:#eef2ff;color:#4f46e5;padding:1px 6px;border-radius:6px;font-size:10px}
+.hist-act{flex-shrink:0;display:flex;gap:6px}
+.hist-act button{border:none;border-radius:8px;font-size:11px;font-weight:600;padding:6px 10px;cursor:pointer}
+.hist-act .go{background:var(--primary-l);color:var(--primary-d)}
+.hist-act .del{background:#fde8e8;color:#b91c1c}
+
+/* ───────────── 用户菜单 ───────────── */
+.menu-user{display:flex;align-items:center;gap:11px;padding:4px 2px 12px;border-bottom:1px solid var(--line);margin-bottom:6px}
+.menu-avatar{width:46px;height:46px;border-radius:50%;background:linear-gradient(135deg,#fbbf24,#f59e0b);
+  color:#7c2d12;font-size:20px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.menu-info .uname{font-size:16px;font-weight:800}
+.menu-info .urole{font-size:11px;color:var(--muted);margin-top:2px}
+.role-pill{display:inline-block;background:#eef2ff;color:#4f46e5;font-size:10px;font-weight:700;padding:1px 8px;border-radius:999px;margin-left:6px}
+.role-pill.admin{background:#fef3c7;color:#92400e}
+.menu-item{display:flex;align-items:center;gap:11px;width:100%;border:none;background:#fff;padding:13px 8px;
+  font-size:14px;color:var(--ink);cursor:pointer;border-bottom:1px solid #f4f6fa;text-align:left}
+.menu-item:active{background:#f7f9fc}
+.menu-item .mi{font-size:17px;width:24px;text-align:center}
+.menu-item.danger{color:#b91c1c}
+.menu-item .right{margin-left:auto;color:var(--muted);font-size:12px}
+
+/* 开关 */
+.switch{display:flex;align-items:center;gap:11px;width:100%;padding:13px 8px;border-bottom:1px solid #f4f6fa;font-size:14px;cursor:pointer}
+.switch .track{margin-left:auto;width:44px;height:25px;border-radius:999px;background:#dbe2ec;position:relative;transition:.2s;flex-shrink:0}
+.switch .track::after{content:'';position:absolute;top:2.5px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;transition:.2s;box-shadow:0 1px 4px rgba(0,0,0,.2)}
+.switch.on .track{background:var(--primary)}
+.switch.on .track::after{left:21px}
+
+/* ───────────── 用户管理 ───────────── */
+.um-row{display:flex;align-items:center;gap:9px;padding:11px 4px;border-bottom:1px solid #f0f3f8}
+.um-av{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#dbe4f5,#b9c8e6);color:#33507e;
+  font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.um-main{flex:1;min-width:0}
+.um-name{font-size:13.5px;font-weight:700;display:flex;align-items:center;gap:6px}
+.um-sub{font-size:10.5px;color:#94a3b8;margin-top:2px}
+.um-act{display:flex;gap:5px;flex-shrink:0}
+.um-act button{border:none;border-radius:7px;font-size:10.5px;font-weight:700;padding:5px 8px;cursor:pointer}
+.um-act .r{background:#eef2ff;color:#4f46e5}
+.um-act .t{background:#f0fdf6;color:#15803d}
+.um-act .t.off{background:#fff7ed;color:#c2410c}
+.um-act .d{background:#fde8e8;color:#b91c1c}
+
+/* ───────────── 职称/诊断/详情 ───────────── */
+.title-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.title-grid button{padding:14px 8px;border-radius:12px;border:1.5px solid #d8dfe8;background:#fff;font-size:14px;
+  font-weight:700;color:var(--ink);cursor:pointer;transition:all .15s}
+.title-grid button:active{border-color:var(--primary);background:var(--primary-l)}
+.detail-sec{margin-bottom:12px}
+.detail-sec h4{color:#4f6fb5;font-size:13px;margin:0 0 5px}
+.detail-sec .dv{font-size:13px;line-height:1.75;color:#33415c}
+.detail-photo{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px}
+.detail-photo img{width:86px;height:74px;object-fit:cover;border-radius:7px;border:1px solid var(--line);cursor:pointer}
+.comment-input{display:flex;gap:7px;margin:8px 0}
+.comment-input input{flex:1}
+.comment-item{padding:8px 2px;border-bottom:1px solid #f0f3f8;font-size:12.5px}
+.comment-item .ch{display:flex;justify-content:space-between}
+.comment-item .ca{font-weight:700;font-size:12px}
+.comment-item .ct{color:#94a3b8;font-size:10px}
+.comment-item .cb{line-height:1.65;margin:4px 0;white-space:pre-wrap;color:#33415c}
+.comment-item .cv{display:flex;gap:14px;font-size:11.5px;color:var(--muted)}
+.comment-item .cv span{cursor:pointer}
+
+/* ───────────── 调试面板 ───────────── */
+.debug-panel{display:none;position:fixed;z-index:90;inset:0;background:#16213e;color:#e2e8f0;padding:14px;overflow-y:auto}
+.debug-panel.show{display:block}
+.dp-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.dp-head h3{color:#fff;font-size:15px}
+.dp-head button{border:1.5px solid #64748b;background:transparent;color:#e2e8f0;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer}
+.dp-search{display:flex;gap:8px;margin-bottom:10px}
+.dp-search input{flex:1;padding:9px 12px;border:1px solid #475569;border-radius:8px;font-size:13px;background:#0f172a;color:#fff;outline:none}
+.dp-search button{border:1px solid #64748b;background:#1e293b;color:#e2e8f0;border-radius:8px;padding:0 14px;font-size:12px;cursor:pointer}
+.dp-tbl{width:100%;border-collapse:collapse;font-size:11.5px}
+.dp-tbl th{background:#1e293b;color:#fff;padding:7px 8px;text-align:left;position:sticky;top:0}
+.dp-tbl td{padding:6px 8px;border-bottom:1px solid #26334d}
+.dp-tbl tr{cursor:pointer}
+
+/* ───────────── 滚动按钮 ───────────── */
+#scrollBtn{display:none;position:absolute;right:14px;bottom:88px;width:38px;height:38px;border-radius:50%;
+  border:1px solid var(--line);background:#fff;cursor:pointer;font-size:15px;box-shadow:0 4px 14px rgba(23,35,61,.18);z-index:20;color:var(--muted)}
+
+/* ───────────── 轻提示 ───────────── */
+.toast{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:9999;max-width:88vw;
+  padding:10px 20px;border-radius:999px;font-size:13px;font-weight:600;color:#fff;box-shadow:0 6px 20px rgba(0,0,0,.24);animation:down .25s ease}
+@keyframes down{from{transform:translate(-50%,-12px);opacity:0}to{transform:translate(-50%,0);opacity:1}}
+
+.spinner{width:30px;height:30px;border:3px solid #e0e4ea;border-top-color:var(--primary);border-radius:50%;animation:spin .7s linear infinite}
 .spinner-sm{display:inline-block;width:14px;height:14px;border:2px solid #ddd;border-top-color:#7c3aed;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle}
-
 @keyframes spin{to{transform:rotate(360deg)}}
-@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+@keyframes up{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 
-/* Responsive */
-@media(max-width:768px){
-  .header{padding:10px 14px}
-  .header h1{font-size:16px}
-  .header .subtitle{display:none}
-  .header .svc{font-size:9px}
-  .container{margin:8px auto;padding:0 8px}
-  .tabs{border-radius:8px 8px 0 0}
-  .panel{border-radius:0 0 8px 8px}
-  .chat-area{height:380px}
-  .bubble{max-width:85%;font-size:12px}
-  .case-selector{flex-direction:column;align-items:flex-start}
-  .case-selector select{width:100%;max-width:100%}
-  .score-grid{grid-template-columns:repeat(2,1fr)}
-  .modal{padding:16px;border-radius:12px}
-  .input-area{padding:8px 10px}
-}
-
-@media(max-width:480px){
-  .chat-area{height:320px}
-  .bubble{max-width:90%}
-  .tab{font-size:12px;padding:10px 8px}
-  .tab .icon{font-size:16px}
-  .btn{padding:7px 12px;font-size:11px}
-  .grade-badge{font-size:14px}
-  .modal{padding:12px}
+/* ───────────── 桌面端适配 ───────────── */
+@media(min-width:900px){
+  .topbar{padding:10px 24px}
+  .brand-txt h1{font-size:19px}
+  .main{padding:14px 16px 16px}
+  .tabs{display:flex;background:var(--card);border:1px solid var(--line);border-bottom:none;
+    border-radius:var(--radius) var(--radius) 0 0;flex-shrink:0}
+  .tabs .tab{flex-direction:row;gap:6px;padding:13px 22px}
+  .tabs .tab .tico{font-size:17px}
+  .tabs .tab.on::after{display:none}
+  .tabs .tab.on{background:var(--primary-l);color:var(--primary-d)}
+  .bottom-tabs{display:none}
+  .chat-area{padding:18px 18px 10px}
+  .msg .mcol{max-width:62%}
+  .case-bar{flex-direction:row;align-items:center;flex-wrap:wrap}
+  .case-row1{flex:1;min-width:250px}
+  .case-row2{width:auto}
+  .score-grid{grid-template-columns:repeat(4,1fr)}
+  .sheet-overlay{align-items:center;padding:20px}
+  .sheet{border-radius:18px}
+  .grip{display:none}
 }
 </style>
 </head>
 <body>
 
-<div class="header">
-  <div>
-    <h1>&#x1F9B7; 口腔黏膜病AI诊断Agent</h1>
-    <div class="subtitle">基于 DeepSeek V4 Pro — 中西医结合智能诊疗系统</div>
-  </div>
-  <div style="display:flex;align-items:center;gap:10px">
-    <button class="btn" onclick="openHistory()" title="查看/继续历史会话" style="background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.28);font-size:12px">&#x1F4C1; 历史会话</button>
-    <div class="svc" onclick="toggleDebug()" title="调试面板" style="cursor:pointer"><span id="svcDot" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#4ade80"></span> 服务就绪</div>
+<div class="app">
+  <!-- 顶部栏 -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">&#x1F9B7;</span>
+      <div class="brand-txt">
+        <h1>口腔黏膜病 AI 诊断</h1>
+        <div class="sub">中西医结合 · DeepSeek 智能诊疗</div>
+      </div>
+    </div>
+    <div class="hdr-actions">
+      <button class="hbtn" id="histBtn" onclick="openHistory()">&#x1F4C1; 历史</button>
+      <button class="avatar" id="userBtn" onclick="toggleUserMenu()" title="用户中心">&#x1F464;</button>
+    </div>
+  </header>
+
+  <main class="main">
+    <!-- 桌面端顶部Tab -->
+    <nav class="tabs" id="tabsTop">
+      <button class="tab on" data-mode="training" onclick="switchMode('training')"><span class="tico">&#x1F9D1;&#x200D;&#x2695;&#xFE0F;</span>医学生训练</button>
+      <button class="tab" data-mode="test" onclick="switchMode('test')"><span class="tico">&#x1F4CA;</span>测试模式</button>
+      <button class="tab" data-mode="consult" onclick="switchMode('consult')"><span class="tico">&#x1F3E5;</span>患者咨询</button>
+    </nav>
+
+    <section class="panel">
+      <!-- 病例选择 -->
+      <div id="caseBar" class="case-bar">
+        <div class="case-row1">
+          <span class="lbl">&#x1F4CB; 病例:</span>
+          <select id="caseSelect" onchange="onCaseChange()"><option value="">-- 请选择病例 --</option></select>
+        </div>
+        <div class="case-row2">
+          <button class="btn-exam" onclick="randomCase()" style="border-color:#ecd9a9;color:#8a5a06;background:#fffef8">&#x1F3B2; 随机</button>
+          <label class="chip"><input type="checkbox" id="photoFilter" onchange="filterCases()"> 有照片</label>
+          <button class="btn-exam" onclick="handleStart()" style="flex:1;border-color:var(--primary);color:#fff;background:linear-gradient(135deg,#2563eb,#3b82f6);font-size:13px">&#x1F4A1; 开始问诊</button>
+        </div>
+      </div>
+
+      <!-- 状态栏 -->
+      <div id="statusBar" class="status-bar">
+        <span class="dot"></span><span id="statusText">问诊中</span>
+        <span class="case-lbl" id="caseLabel"></span>
+        <button class="end-btn" id="endBtn" onclick="endConsultation()" style="display:none">&#x2714; 结束问诊</button>
+      </div>
+
+      <!-- 聊天区 -->
+      <div class="chat-area training" id="chatArea">
+        <div class="empty-state">
+          <div class="eicon">&#x1F4AC;</div>
+          <div class="etitle">医学生训练模式</div>
+          <p>选择病例开始模拟接诊。患者的诊断不会显示，请通过问诊自行判断。</p>
+        </div>
+      </div>
+
+      <!-- 检查工具箱（横向滚动） -->
+      <div id="examBar" class="exam-bar" style="display:none">
+        <span class="tt">&#x1F52C; 工具箱:</span>
+        <button class="btn-exam" onclick="requestExam('oral_exam')">&#x1F9B7; 口腔检查</button>
+        <div class="exam-dd" id="dd-lab">
+          <button class="btn-exam" onclick="toggleDD(this)">&#x1F9EA; 化验 &#x25BE;</button>
+          <div class="menu">
+            <label><input type="checkbox" value="cbc_wbc"> 血常规(WBC)</label>
+            <label><input type="checkbox" value="esr"> 血沉(ESR)</label>
+            <label><input type="checkbox" value="crp"> C反应蛋白(CRP)</label>
+            <label><input type="checkbox" value="ana"> 抗核抗体(ANA)</label>
+            <label><input type="checkbox" value="anti_desmoglein_1"> 抗Dsg1</label>
+            <label><input type="checkbox" value="anti_desmoglein_3"> 抗Dsg3</label>
+            <label><input type="checkbox" value="anti_bp180"> 抗BP180</label>
+            <label><input type="checkbox" value="anti_bp230"> 抗BP230</label>
+            <button class="ok" onclick="requestExam('lab_tests',this)">确认申请</button>
+          </div>
+        </div>
+        <div class="exam-dd" id="dd-micro">
+          <button class="btn-exam" onclick="toggleDD(this)">&#x1F9EB; 微生物 &#x25BE;</button>
+          <div class="menu">
+            <label><input type="checkbox" value="fungal_smear"> 真菌涂片</label>
+            <label><input type="checkbox" value="fungal_culture"> 真菌培养</label>
+            <label><input type="checkbox" value="hsv_pcr"> HSV PCR</label>
+            <label><input type="checkbox" value="vzv_pcr"> VZV PCR</label>
+            <button class="ok" onclick="requestExam('microbiology',this)">确认申请</button>
+          </div>
+        </div>
+        <button class="btn-exam" onclick="requestExam('pathology')">&#x1F52C; 病理</button>
+        <button class="btn-exam" onclick="requestExam('tcm_diagnosis')">&#x1F9D1;&#x200D;&#x2695;&#xFE0F; 中医四诊</button>
+      </div>
+
+      <!-- 评分面板 -->
+      <div class="score-panel" id="scorePanel">
+        <div class="sp-head">
+          <h3>&#x1F4CA; 诊断评估结果</h3>
+          <span class="grade-badge" id="gradeBadge">-</span>
+          <span class="sp-total" id="totalScore">总分: -</span>
+        </div>
+        <div class="score-grid">
+          <div class="score-item" id="scoreDiag"><div class="v">-</div><div class="l">西医诊断 (70%)</div></div>
+          <div class="score-item" id="scoreTreat"><div class="v">-</div><div class="l">治疗方案 (30%)</div></div>
+          <div class="score-item" id="scoreTCM"><div class="v">-</div><div class="l">中医加分 (+0~10)</div></div>
+          <div class="score-item" id="scoreEff"><div class="v">-</div><div class="l">问诊轮次</div></div>
+        </div>
+        <div class="truth-box">
+          <h4>&#x1F4D6; 标准答案（仅训练可见）</h4>
+          <div id="truthContent"></div>
+        </div>
+        <button class="w-btn" id="tutorBtn" onclick="getTutorReview()" style="display:none">&#x1F468;&#x200D;&#x1F3EB; 导师点评</button>
+        <div class="tutor-box" id="tutorReview"></div>
+      </div>
+
+      <!-- 输入区 -->
+      <div class="composer">
+        <button class="mic-btn" id="micBtn" title="语音输入" onclick="toggleMic()">&#x1F3A4;</button>
+        <input type="text" id="msgInput" placeholder="输入问诊内容..." disabled>
+        <button class="send-btn" id="sendBtn" onclick="sendMessage()" disabled>发送</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- 移动端底部Tab -->
+  <nav class="bottom-tabs" id="tabsBottom">
+    <button class="btab on" data-mode="training" onclick="switchMode('training')"><span class="tico">&#x1F9D1;&#x200D;&#x2695;&#xFE0F;</span>训练</button>
+    <button class="btab" data-mode="test" onclick="switchMode('test')"><span class="tico">&#x1F4CA;</span>测试</button>
+    <button class="btab" data-mode="consult" onclick="switchMode('consult')"><span class="tico">&#x1F3E5;</span>咨询</button>
+  </nav>
+</div>
+
+<!-- ─── 历史会话 ─── -->
+<div class="sheet-overlay" id="histOverlay">
+  <div class="sheet">
+    <div class="grip"></div>
+    <div class="sheet-head">
+      <h3>&#x1F4C1; 历史会话</h3>
+      <button class="x" onclick="closeOverlay('histOverlay')">&#x2715;</button>
+    </div>
+    <div class="sheet-body">
+      <p style="font-size:11px;color:#94a3b8;margin-bottom:6px">会话保存在服务器，刷新页面、服务重启后仍可继续。各用户仅能查看自己的会话。</p>
+      <div id="historyList"><div style="text-align:center;padding:30px"><div class="spinner"></div><p style="margin-top:10px;font-size:12px;color:#94a3b8">加载中...</p></div></div>
+    </div>
   </div>
 </div>
 
-<div class="container">
-  <div class="tabs">
-    <button class="tab active" onclick="switchMode('training')"><span class="icon">&#x1F468;&#x200D;&#x2695;&#xFE0F;</span>医学生训练</button>
-    <button class="tab" onclick="switchMode('test')"><span class="icon">&#x1F4CA;</span>测试模式</button>
-    <button class="tab" onclick="switchMode('consult')"><span class="icon">&#x1F3E5;</span>患者咨询</button>
-  </div>
-
-  <div class="panel">
-
-    <!-- 病例选择器（仅训练模式） -->
-    <div id="caseSelector" class="case-selector">
-      <label>&#x1F4CB; 选择训练病例：</label>
-      <select id="caseSelect" onchange="onCaseChange()"><option value="">-- 请选择病例 --</option></select>
-      <button class="btn btn-outline" onclick="handleStart()" style="padding:6px 14px;font-size:11px">开始问诊</button>
-      <button class="btn btn-outline" onclick="randomCase()" style="padding:6px 12px;font-size:11px" title="随机选择病例">&#x1F3B2; 随机</button>
-      <label style="margin-left:6px;cursor:pointer;display:flex;align-items:center;gap:3px">
-        <input type="checkbox" id="photoFilter" onchange="filterCases()" style="margin:0"> 有照片
+<!-- ─── 用户菜单 ─── -->
+<div class="sheet-overlay" id="menuOverlay">
+  <div class="sheet">
+    <div class="grip"></div>
+    <div class="sheet-body" style="padding:14px 16px">
+      <div class="menu-user">
+        <div class="menu-avatar" id="menuAvatar">&#x1F464;</div>
+        <div class="menu-info">
+          <div class="uname" id="menuName">-</div>
+          <div class="urole" id="menuRole">-</div>
+        </div>
+      </div>
+      <label class="switch" id="ttsSwitch" onclick="toggleTTS()">
+        <span class="mi" style="font-size:17px;width:24px;text-align:center">&#x1F50A;</span>
+        <span>语音播报（回复自动朗读）</span>
+        <span class="track"></span>
       </label>
+      <button class="menu-item" onclick="openPwSheet()"><span class="mi">&#x1F511;</span>修改密码<span class="right">&#x203A;</span></button>
+      <button class="menu-item" id="debugEntry" style="display:none" onclick="toggleDebug()"><span class="mi">&#x1F6E0;&#xFE0F;</span>病例调试面板<span class="right">&#x203A;</span></button>
+      <button class="menu-item" id="adminEntry" style="display:none" onclick="openAdmin()"><span class="mi">&#x1F465;</span>用户管理<span class="right">&#x203A;</span></button>
+      <button class="menu-item danger" onclick="doLogout()"><span class="mi">&#x1F6AA;</span>退出登录</button>
     </div>
+  </div>
+</div>
 
-    <!-- 状态栏 -->
-    <div id="statusBar" class="status-bar">
-      <span class="dot active"></span><span id="statusText">问诊中</span>
-      <span id="caseLabel"></span>
+<!-- ─── 修改密码 ─── -->
+<div class="sheet-overlay" id="pwOverlay">
+  <div class="sheet">
+    <div class="grip"></div>
+    <div class="sheet-head">
+      <h3>&#x1F511; 修改密码</h3>
+      <button class="x" onclick="closeOverlay('pwOverlay')">&#x2715;</button>
     </div>
-
-    <!-- 聊天区 -->
-    <div class="chat-area training" id="chatArea">
-      <div class="empty-state"><div class="icon">&#x1F4AC;</div>
-        <p><b>医学生训练模式</b></p>
-        <p style="font-size:12px;color:#888;margin-top:4px">选择病例开始模拟接诊。患者的诊断不会显示，请通过问诊自行判断。</p>
-      </div>
+    <div class="sheet-body">
+      <label class="lb">原密码</label>
+      <input type="password" id="oldPw" placeholder="请输入原密码">
+      <label class="lb">新密码（至少6位）</label>
+      <input type="password" id="newPw" placeholder="请输入新密码">
+      <label class="lb">确认新密码</label>
+      <input type="password" id="newPw2" placeholder="再次输入新密码">
     </div>
+    <div class="sheet-foot">
+      <button class="b-btn ghost" onclick="closeOverlay('pwOverlay')">取消</button>
+      <button class="b-btn primary" onclick="submitPwChange()">确认修改</button>
+    </div>
+  </div>
+</div>
 
-    <!-- 检查工具箱 -->
-    <div id="examToolbar" class="exam-toolbar">
-      <span class="tt">&#x1F52C; 工具箱:</span>
-      <button class="btn-exam" onclick="requestExam('oral_exam')">&#x1F9B7; 口腔检查</button>
-      <div class="dropdown" id="dd-lab">
-        <button class="btn-exam" onclick="toggleDD('dd-lab')">&#x1F9EA; 化验 &#x25BE;</button>
-        <div class="dropdown-menu">
-          <label><input type="checkbox" value="cbc_wbc"> 血常规(WBC)</label>
-          <label><input type="checkbox" value="esr"> 血沉(ESR)</label>
-          <label><input type="checkbox" value="crp"> C反应蛋白(CRP)</label>
-          <label><input type="checkbox" value="ana"> 抗核抗体(ANA)</label>
-          <label><input type="checkbox" value="anti_desmoglein_1"> 抗Dsg1</label>
-          <label><input type="checkbox" value="anti_desmoglein_3"> 抗Dsg3</label>
-          <label><input type="checkbox" value="anti_bp180"> 抗BP180</label>
-          <label><input type="checkbox" value="anti_bp230"> 抗BP230</label>
-          <div class="dd-confirm"><button class="btn btn-outline" onclick="requestExam('lab_tests');toggleDD('dd-lab')" style="padding:4px 12px;font-size:11px;width:100%">确认申请</button></div>
+<!-- ─── 用户管理（admin） ─── -->
+<div class="sheet-overlay" id="adminOverlay">
+  <div class="sheet">
+    <div class="grip"></div>
+    <div class="sheet-head">
+      <h3>&#x1F465; 用户管理</h3>
+      <button class="x" onclick="closeOverlay('adminOverlay')">&#x2715;</button>
+    </div>
+    <div class="sheet-body">
+      <div style="background:#f8fafc;border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:10px">
+        <div style="font-size:12px;font-weight:700;color:#475569;margin-bottom:8px">&#x2795; 新增用户</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <input id="nuUser" placeholder="用户名" style="flex:1;min-width:110px">
+          <input id="nuName" placeholder="显示名称(可选)" style="flex:1;min-width:110px">
+          <input id="nuPw" type="password" placeholder="密码(≥6位)" style="flex:1;min-width:110px">
+          <select id="nuRole" style="padding:11px;border:1.5px solid #d8dfe8;border-radius:10px;font-size:14px;background:#f8fafc">
+            <option value="user">普通用户</option>
+            <option value="admin">管理员</option>
+          </select>
         </div>
+        <button class="b-btn primary block" style="margin-top:8px" onclick="adminCreateUser()">&#x2795; 创建账号</button>
       </div>
-      <div class="dropdown" id="dd-micro">
-        <button class="btn-exam" onclick="toggleDD('dd-micro')">&#x1F9EB; 微生物 &#x25BE;</button>
-        <div class="dropdown-menu">
-          <label><input type="checkbox" value="fungal_smear"> 真菌涂片</label>
-          <label><input type="checkbox" value="fungal_culture"> 真菌培养</label>
-          <label><input type="checkbox" value="hsv_pcr"> HSV PCR</label>
-          <label><input type="checkbox" value="vzv_pcr"> VZV PCR</label>
-          <div class="dd-confirm"><button class="btn btn-outline" onclick="requestExam('microbiology');toggleDD('dd-micro')" style="padding:4px 12px;font-size:11px;width:100%">确认申请</button></div>
+      <div id="adminList"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ─── 职称选择（测试模式） ─── -->
+<div class="sheet-overlay" id="titleOverlay">
+  <div class="sheet">
+    <div class="grip"></div>
+    <div class="sheet-body">
+      <h3 style="font-size:16px;margin-bottom:4px">&#x1F3C5; 选择您的职称</h3>
+      <p style="font-size:12px;color:#94a3b8;margin-bottom:14px">测试模式会记录全部问诊参数并保存。主治医师及以上不显示导师评语，仅展示参考答案。</p>
+      <div class="title-grid">
+        <button onclick="selectTitle('医学生')">&#x1F393; 医学生</button>
+        <button onclick="selectTitle('住院医师')">&#x1F9D1;&#x200D;&#x2695;&#xFE0F; 住院医师</button>
+        <button onclick="selectTitle('主治医师')">&#x1F4CB; 主治医师</button>
+        <button onclick="selectTitle('副主任医师')">&#x1F3C6; 副主任医师</button>
+        <button onclick="selectTitle('主任医师')" style="grid-column:1/-1">&#x2B50; 主任医师</button>
+      </div>
+    </div>
+    <div class="sheet-foot">
+      <button class="b-btn ghost" onclick="closeOverlay('titleOverlay')">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── 诊断表单 ─── -->
+<div class="sheet-overlay" id="diagOverlay">
+  <div class="sheet">
+    <div class="grip"></div>
+    <div class="sheet-head">
+      <h3>&#x1F4DD; 请给出您的诊断和治疗方案</h3>
+      <button class="x" onclick="closeOverlay('diagOverlay')">&#x2715;</button>
+    </div>
+    <div class="sheet-body">
+      <p style="font-size:12px;color:#94a3b8;margin-bottom:6px">基于刚才的问诊对话，填写以下内容。系统将自动评分。</p>
+      <label class="lb">1. 西医诊断（主要诊断名称）</label>
+      <input type="text" id="diagInput" placeholder="例如：糜烂型口腔扁平苔藓">
+      <label class="lb">2. 中医辨证分型</label>
+      <input type="text" id="tcmInput" placeholder="例如：肝郁气滞，兼有血瘀证（无中医数据可留空）">
+      <label class="lb">3. 治疗方案（局部+全身用药要点）</label>
+      <textarea id="treatInput" placeholder="例如：曲安奈德软膏bid外用；泼尼松20mg qd口服"></textarea>
+    </div>
+    <div class="sheet-foot">
+      <button class="b-btn ghost" onclick="closeOverlay('diagOverlay')">取消</button>
+      <button class="b-btn primary" onclick="submitDiagnosis()">&#x1F4C8; 提交评分</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── 病例详情 + 讨论区 ─── -->
+<div class="sheet-overlay" id="detailOverlay">
+  <div class="sheet">
+    <div class="grip"></div>
+    <div class="sheet-head">
+      <h3>&#x1F50D; 病例详情</h3>
+      <button class="x" onclick="closeOverlay('detailOverlay')">&#x2715;</button>
+    </div>
+    <div class="sheet-body">
+      <div id="detailBody" style="font-size:13px">加载中...</div>
+      <div style="border-top:1.5px solid var(--line);margin-top:12px;padding-top:12px">
+        <h4 style="font-size:14px;margin-bottom:4px">&#x1F4AC; 讨论区</h4>
+        <div class="comment-input">
+          <input type="text" id="commentInput" placeholder="输入您的建议或讨论内容...">
         </div>
+        <button class="b-btn primary block" onclick="submitComment()">发送</button>
+        <div id="detailComments" style="margin-top:10px;font-size:12px;max-height:220px;overflow-y:auto">暂无评论</div>
       </div>
-      <button class="btn-exam" onclick="requestExam('pathology')">&#x1F52C; 病理</button>
-      <button class="btn-exam" onclick="requestExam('tcm_diagnosis')">&#x1F9D1;&#x200D;&#x2695;&#xFE0F; 中医四诊</button>
-    </div>
-
-    <!-- 输入区 -->
-    <div class="input-area">
-      <input type="text" id="msgInput" placeholder="输入问诊内容..." disabled onkeypress="if(event.key==='Enter')sendMessage()">
-      <button class="btn btn-primary" id="sendBtn" onclick="sendMessage()" disabled>发送</button>
-      <button class="btn btn-warn" id="endBtn" onclick="endConsultation()" style="display:none">&#x2714; 结束</button>
-      <button class="btn btn-outline" onclick="resetSession()">&#x1F504; 重置</button>
-    </div>
-
-    <!-- 评分面板 -->
-    <div class="score-panel" id="scorePanel">
-      <div style="display:flex;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px">
-        <h3 style="margin:0">&#x1F4CA; 诊断评估结果</h3>
-        <span class="grade-badge" id="gradeBadge">-</span>
-        <span style="font-size:15px;font-weight:700" id="totalScore">总分: -</span>
-      </div>
-      <div class="score-grid">
-        <div class="score-item" id="scoreDiag"><div class="score-val">-</div><div class="score-lbl">西医诊断 (70%)</div></div>
-        <div class="score-item" id="scoreTreat"><div class="score-val">-</div><div class="score-lbl">治疗方案 (30%)</div></div>
-        <div class="score-item" id="scoreTCM"><div class="score-val">-</div><div class="score-lbl">中医加分 (+0~10)</div></div>
-        <div class="score-item" id="scoreEff"><div class="score-val">-</div><div class="score-lbl">问诊轮次</div></div>
-      </div>
-      <div class="truth-box">
-        <h4>&#x1F4D6; 标准答案（仅训练可见）</h4>
-        <div id="truthContent"></div>
-      </div>
-      <div style="margin-top:10px">
-        <button class="btn btn-outline" id="tutorBtn" onclick="getTutorReview()" style="width:100%">&#x1F468;&#x200D;&#x1F3EB; 导师点评</button>
-      </div>
-      <div id="tutorReview" style="margin-top:10px;padding:10px;background:#fefce8;border-radius:8px;border:1px solid #fde68a;font-size:13px;line-height:1.7;display:none;max-height:200px;overflow-y:auto"></div>
-    </div>
-
-  </div>
-</div>
-
-<!-- 调试面板 -->
-<div id="debugPanel" style="display:none;max-width:1100px;margin:12px auto;padding:0 12px">
-  <div style="background:#1a1a2e;border-radius:12px;padding:16px;max-height:60vh;overflow-y:auto">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <h3 style="color:#fff;margin:0">&#x1F6E0; 调试面板 — 全部病例</h3>
-      <button class="btn btn-outline" onclick="toggleDebug()" style="font-size:11px">&#x2715; 关闭</button>
-    </div>
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      <input type="text" id="debugSearch" placeholder="搜索病例ID/诊断/辨证..." oninput="renderDebugTable()"
-        style="flex:1;padding:8px 12px;border:1px solid #444;border-radius:8px;font-size:12px;background:#2a2a3e;color:#fff;outline:none">
-      <button class="btn btn-outline" onclick="loadDebugData()" style="font-size:11px">&#x1F504; 刷新</button>
-    </div>
-    <div id="debugContent" style="color:#ccc;font-size:11px;line-height:1.5">
-      <div class="spinner"></div><p style="text-align:center;margin-top:10px">加载中...</p>
     </div>
   </div>
 </div>
 
-<!-- 历史会话弹窗 -->
-<div class="modal-overlay" id="historyModal">
-  <div class="modal" style="max-width:640px">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <h3 style="margin:0">&#x1F4C1; 历史会话</h3>
-      <button class="btn btn-outline" onclick="closeHistory()" style="font-size:11px">&#x2715; 关闭</button>
-    </div>
-    <p style="font-size:11px;color:#888;margin-bottom:8px">会话保存在服务器，刷新页面、服务重启后仍可继续。</p>
-    <div id="historyList" style="max-height:55vh;overflow-y:auto">
-      <div class="spinner"></div><p style="text-align:center;margin-top:10px">加载中...</p>
-    </div>
+<!-- ─── 调试面板（admin） ─── -->
+<div class="debug-panel" id="debugPanel">
+  <div class="dp-head">
+    <h3>&#x1F6E0;&#xFE0F; 调试面板 — 全部病例</h3>
+    <button onclick="toggleDebug()">&#x2715; 关闭</button>
+  </div>
+  <div class="dp-search">
+    <input type="text" id="debugSearch" placeholder="搜索病例ID/诊断/辨证..." oninput="renderDebugTable()">
+    <button onclick="loadDebugData()">&#x1F504; 刷新</button>
+  </div>
+  <div id="debugContent" style="font-size:12px;line-height:1.5">
+    <div style="text-align:center;padding:40px"><div class="spinner"></div><p style="margin-top:10px">加载中...</p></div>
   </div>
 </div>
 
-<!-- 职称选择弹窗（测试模式） -->
-<div class="modal-overlay" id="titleModal">
-  <div class="modal">
-    <h3>&#x1F3C5; 选择您的职称</h3>
-    <p style="font-size:12px;color:#888;margin-bottom:16px">测试模式会记录全部问诊参数并保存到服务器。主治医师及以上不显示导师评语，仅展示参考答案。</p>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-      <button class="btn btn-outline" onclick="selectTitle('医学生')" style="padding:12px;font-size:14px">&#x1F393; 医学生</button>
-      <button class="btn btn-outline" onclick="selectTitle('住院医师')" style="padding:12px;font-size:14px">&#x1F468;&#x200D;&#x2695;&#xFE0F; 住院医师</button>
-      <button class="btn btn-outline" onclick="selectTitle('主治医师')" style="padding:12px;font-size:14px">&#x1F4CB; 主治医师</button>
-      <button class="btn btn-outline" onclick="selectTitle('副主任医师')" style="padding:12px;font-size:14px">&#x1F3C6; 副主任医师</button>
-      <button class="btn btn-outline" onclick="selectTitle('主任医师')" style="padding:12px;font-size:14px;grid-column:1/-1">&#x2B50; 主任医师</button>
-    </div>
-    <div class="btn-row">
-      <button class="btn btn-outline" onclick="document.getElementById('titleModal').classList.remove('show')">取消</button>
-    </div>
-  </div>
-</div>
-
-<!-- 病例详情弹窗（调试模式点击ID） -->
-<div class="modal-overlay" id="detailOverlay">
-  <div class="modal" style="max-width:800px;max-height:90vh">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <h3 style="margin:0">&#x1F50D; 病例详情</h3>
-      <button class="btn btn-outline" onclick="closeDetail()" style="font-size:11px">&#x2715; 关闭</button>
-    </div>
-    <div id="detailBody" style="max-height:50vh;overflow-y:auto;padding-right:4px">加载中...</div>
-    <div style="border-top:1.5px solid #e5e7eb;margin-top:12px;padding-top:12px">
-      <h4 style="font-size:14px;margin-bottom:8px">&#x1F4AC; 讨论区</h4>
-      <div style="display:flex;gap:8px;margin-bottom:8px">
-        <input type="text" id="commentAuthor" placeholder="您的昵称" style="width:120px;padding:6px 10px;border:1.5px solid #d0d5dd;border-radius:6px;font-size:12px">
-        <input type="text" id="commentInput" placeholder="输入您的建议或讨论内容..." style="flex:1;padding:6px 10px;border:1.5px solid #d0d5dd;border-radius:6px;font-size:12px" onkeypress="if(event.key==='Enter')submitComment()">
-        <button class="btn btn-primary" onclick="submitComment()" style="font-size:11px;padding:6px 14px">发送</button>
-      </div>
-      <div id="detailComments" style="max-height:200px;overflow-y:auto;font-size:12px">暂无评论</div>
-    </div>
-  </div>
-</div>
-
-<!-- 诊断表单弹窗 -->
-<div class="modal-overlay" id="diagModal">
-  <div class="modal">
-    <h3>&#x1F4DD; 请给出您的诊断和治疗方案</h3>
-    <p style="font-size:12px;color:#888;margin-bottom:10px">基于刚才的问诊对话，填写以下内容。系统将自动评分。</p>
-    <label>1. 西医诊断（主要诊断名称）</label>
-    <input type="text" id="diagInput" placeholder="例如：糜烂型口腔扁平苔藓">
-    <label>2. 中医辨证分型</label>
-    <input type="text" id="tcmInput" placeholder="例如：肝郁气滞，兼有血瘀证（若无中医数据可留空）">
-    <label>3. 治疗方案（局部+全身用药要点）</label>
-    <textarea id="treatInput" placeholder="例如：曲安奈德软膏bid外用；泼尼松20mg qd口服"></textarea>
-    <div class="btn-row">
-      <button class="btn btn-outline" onclick="closeModal()">取消</button>
-      <button class="btn btn-primary" onclick="submitDiagnosis()">提交评分</button>
-    </div>
-  </div>
-</div>
-
-<script src="app.js?v=20260816a"></script>
+<script src="app.js?v=0.2.0"></script>
 </body>
 </html>
