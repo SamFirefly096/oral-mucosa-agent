@@ -220,3 +220,14 @@ ssh root@123.56.96.19 "/opt/oral-mucosa-agent/deploy/auto_pull.sh"
 - 项目论文不引用王雨田相关内容
 - 伦理审批为投稿前置条件（尚未获批）
 - 本地完整说明在 `README_完整.md`（含服务器IP等敏感信息，不入git）
+
+## 会场闸门与演示实例（v0.2.1+）
+
+- **闸门**：生产实例设 `OM_GATE_DEMO=1` 后，访问 `/`、`/index.html`、`/login.html` 的普通访客一律 302 到 `/demo/`；
+  管理员不受影响。三种放行方式：① `?pw=ACCESS_PASSWORD`（管理员引导登录）② `?t=<有效管理员令牌>` ③ 管理员登录时种下的 `om_prod_token` Cookie（HttpOnly，30 天，注销即清）。
+  需要额外放行某个非管理员账号时设 `OM_GATE_EXCEPT_USERS=用户名1,用户名2`。
+- **管理员入口**：https://<域名>/?pw=<ACCESS_PASSWORD> ，进入后自动种 Cookie，之后直接访问即可。
+- **演示实例**：systemd `oral-mucosa-demo`（127.0.0.1:5001，nginx `/demo/` 反代，单 worker + 64 线程）。
+  白名单仅 10 例虚构病例；照片接口 403 且 `PHOTO_DIR` 指向空目录；每账号 3 次问诊、每次 15 轮、全站日 200 次熔断；
+  页面顶部注入免责横幅（fixed 整行居中，脚本按实际高度给 body 让位）。
+  **注意**：会话是进程内存态，多 worker 会丢会话，必须保持 `-w 1`。

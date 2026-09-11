@@ -16,7 +16,7 @@ from database import get_hpi_text, query_table, list_cases
 from agents_enhanced import ChiefMedAgent, RealisticPatientAgent, PatientContext
 from config import (ACCESS_PASSWORD, PHOTO_DIR, MEDICAL_MODEL, PATIENT_MODEL,
                     DEMO_MODE, DEMO_CASE_IDS, DEMO_MAX_SESSIONS, DEMO_MAX_TURNS,
-                    DEMO_DAILY_CAP, BASE_PATH)
+                    DEMO_DAILY_CAP, BASE_PATH, GATE_DEMO, GATE_EXCEPT_USERS)
 import user_store
 
 app = Flask(__name__, static_folder="web", static_url_path="")
@@ -79,6 +79,34 @@ def _require_admin():
 
 PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/register"}
 
+# 会场闸门：开启后，访问首页/登录页的普通访客一律 302 到演示版 /demo/，
+# 管理员（role=admin，或 GATE_EXCEPT_USERS 白名单）不受影响。
+# 放行条件（满足其一）：?pw=ACCESS_PASSWORD（管理员口令引导登录）、
+#                      ?t=<有效管理员令牌>、om_prod_token Cookie（管理员登录时种下）。
+def _gate_allows():
+    pw = request.args.get("pw", "")
+    if pw and pw == ACCESS_PASSWORD:
+        return True
+    tok = (request.args.get("t", "") or request.cookies.get("om_prod_token", "")).strip()
+    if not tok:
+        return False
+    u = user_store.resolve_token(tok)
+    if not u:
+        return False
+    if u.get("role") == "admin":
+        return True
+    return u.get("username") in GATE_EXCEPT_USERS
+
+
+def _set_admin_cookie(resp, token):
+    """管理员登录/进入后种下闸门 Cookie（HttpOnly，30 天）。"""
+    if GATE_DEMO and token:
+        u = user_store.resolve_token(token)
+        if u and u.get("role") == "admin":
+            resp.set_cookie("om_prod_token", token, max_age=30 * 24 * 3600,
+                            httponly=True, samesite="Lax")
+    return resp
+
 @app.before_request
 def check_auth():
     """API 需登录令牌；照片与静态资源免鉴权（由前端控制跳转）。"""
@@ -101,6 +129,10 @@ def check_auth():
             return jsonify({"error": "未登录或登录已过期"}), 401
         return None
     if p.startswith("/") and p.endswith(".html") or p in ("/", "/index.html", "/app.js"):
+        # 会场闸门：非管理员访问首页/登录页 → 直接进演示版
+        if GATE_DEMO and request.method == "GET" and p in ("/", "/index.html", "/login.html"):
+            if not _gate_allows():
+                return redirect("/demo/")
         # 页面骨架无需鉴权；旧链接 ?pw= 兼容：正确则自动登录 admin 并携带令牌跳转
         pw = request.args.get("pw", "")
         if pw and pw == ACCESS_PASSWORD:
@@ -148,11 +180,20 @@ def _demo_surface(resp):
                      ('src="app.js', 'src="' + BASE_PATH + '/app.js')):
             body = body.replace(a, b)
     if DEMO_MODE and fname.endswith(".html") and "om-demo-banner" not in body and "<body>" in body:
-        banner = ('<div id="om-demo-banner" style="position:sticky;top:0;z-index:9999;'
-                  'background:#fff7e6;border-bottom:1px solid #f0c36d;color:#8a5a00;'
-                  "font:12px/1.6 -apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;"
-                  'padding:6px 12px;text-align:center;pointer-events:none">'
-                  '演示环境 · 病例均为虚构 · 不含真实患者数据 · AI 输出仅供教学参考，不作为诊疗依据</div>')
+        # 固定定位整行居中（登录页 body 是 flex 容器，sticky 会被当成 flex item 挤到一侧）；
+        # 用脚本按横幅实际高度给 body 让位，1~3 行都能自适应
+        banner = (
+            '<style>#om-demo-banner{position:fixed;top:0;left:0;right:0;z-index:99999;'
+            'background:#fff7e6;border-bottom:1px solid #f0c36d;color:#8a5a00;'
+            "font:12px/1.6 -apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;"
+            'padding:6px 12px;text-align:center;pointer-events:none;box-sizing:border-box;'
+            'letter-spacing:.2px}</style>'
+            '<div id="om-demo-banner">演示环境 · 病例均为虚构 · 不含真实患者数据 · '
+            'AI 输出仅供教学参考，不作为诊疗依据</div>'
+            '<script>(function(){var b=document.getElementById("om-demo-banner");'
+            'function f(){if(b)document.body.style.paddingTop=b.offsetHeight+"px";}'
+            'f();window.addEventListener("resize",f);window.addEventListener("load",f);setTimeout(f,300);'
+            'setTimeout(f,1200);})();</script>')
         body = body.replace("<body>", "<body>" + banner, 1)
     return app.response_class(body, mimetype=("text/html" if fname.endswith(".html") else "application/javascript"))
 
@@ -352,7 +393,8 @@ def auth_login():
         time.sleep(0.5)  # 降低暴力尝试速率
         return jsonify({"error": "用户名或密码错误"}), 401
     token = user_store.grant_token(user["id"])
-    return jsonify({"token": token, "user": user_store.public_user(user)})
+    resp = jsonify({"token": token, "user": user_store.public_user(user)})
+    return _set_admin_cookie(resp, token)
 
 @app.route("/api/auth/register", methods=["POST"])
 def auth_register():
@@ -369,14 +411,17 @@ def auth_register():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     token = user_store.grant_token(user["id"])
-    return jsonify({"token": token, "user": user_store.public_user(user)})
+    resp = jsonify({"token": token, "user": user_store.public_user(user)})
+    return _set_admin_cookie(resp, token)
 
 @app.route("/api/auth/logout", methods=["POST"])
 def auth_logout():
     token = request.headers.get("X-Auth-Token", "")
     if token:
         user_store.revoke_token(token.strip())
-    return jsonify({"ok": True})
+    resp = jsonify({"ok": True})
+    resp.delete_cookie("om_prod_token")
+    return resp
 
 @app.route("/api/auth/me")
 def auth_me():

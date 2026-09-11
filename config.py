@@ -128,3 +128,9 @@ if DEMO_MODE:
     _empty = PROJECT_ROOT / "outputs" / "demo_photos_empty"
     _empty.mkdir(parents=True, exist_ok=True)
     PHOTO_DIR = os.getenv("OM_DEMO_PHOTO_DIR") or str(_empty)
+
+# ── 会场闸门：默认把访客导入演示版 /demo/，管理员除外 ──────────
+# OM_GATE_DEMO=1                 开启闸门（生产实例开启；演示实例无需开启）
+# OM_GATE_EXCEPT_USERS=a,b       额外放行的用户名（默认仅 admin 角色）
+GATE_DEMO = os.getenv("OM_GATE_DEMO", "") == "1"
+GATE_EXCEPT_USERS = [x.strip() for x in os.getenv("OM_GATE_EXCEPT_USERS", "").split(",") if x.strip()]
