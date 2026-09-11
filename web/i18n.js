@@ -26,7 +26,6 @@
     "显示名称（可选，如：李医生）": "Display name (optional, e.g. Dr. Li)",
     "密码（至少6位）": "Password (min. 6 characters)",
     "确认密码": "Confirm password",
-    "管理员账号由系统内置，拥有最高权限。": "The administrator account is built in with full privileges.",
     "新用户请先注册，各用户会话记录相互独立。": "New users please sign up first. Each user's sessions are private.",
     "两次输入的密码不一致": "The two passwords do not match",
     "用户名或密码错误": "Incorrect username or password",
