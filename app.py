@@ -949,7 +949,7 @@ def request_examination():
     tool_map = {
         "oral_exam": lambda: execute_oral_examination(hid),
         "lab_tests": lambda: execute_lab_tests(hid, params.get("tests")),
-        "microbiology": lambda: execute_microbiology(hid),
+        "microbiology": lambda: execute_microbiology(hid, params.get("tests")),
         "pathology": lambda: execute_pathology(hid),
         "tcm_diagnosis": lambda: execute_tcm_four_diagnosis(hid),
     }

@@ -82,19 +82,9 @@ def execute_search_knowledge(hadm_id: str = "", query: str = "", knowledge_type:
     return "\n".join(lines)
 
 
-def _fmt_table(name: str, row: dict) -> str:
-    """将数据库行格式化为 LLM 可读的文本"""
-    if not row:
-        return f"[{name}] 无数据"
 
-    items = []
-    for k, v in row.items():
-        if k in ("id", "hadm_id"):
-            continue
-        if v is None:
-            continue
-        # 翻译常用字段名
-        label = {
+# 字段/检查项 → 中文标签（_fmt_table 与「未行」提示共用）
+_LABEL = {
             # patients
             "age": "年龄", "gender": "性别",
             "systemic_diseases": "系统性疾病", "medications": "当前用药", "allergies": "药物过敏",
@@ -130,7 +120,56 @@ def _fmt_table(name: str, row: dict) -> str:
             "topical_treatment": "局部治疗", "systemic_treatment": "全身治疗",
             "adjunctive_treatment": "辅助治疗", "follow_up_plan": "随访计划",
             "admission_needed": "需住院", "prognosis": "预后",
-        }.get(k, k)
+}
+
+NOT_DONE = "未行该检验或检查"
+
+
+def _nonempty(row: dict) -> dict:
+    """过滤掉 None/空串/占位值，只保留真正有结果的字段。"""
+    if not row:
+        return {}
+    bad = ("", "none", "null", "nan", "n/a", "-")
+    out = {}
+    for k, v in row.items():
+        if k in ("id", "hadm_id"):
+            continue
+        if v is None:
+            continue
+        if str(v).strip().lower() in bad:
+            continue
+        out[k] = v
+    return out
+
+
+def _pending_block(requested, raw: dict, phrase: str = "未行该检验") -> str:
+    """列出「本次申请但数据库无结果」的项目，明确告知未行。"""
+    if not requested:
+        return ""
+    missing = []
+    for t in requested:
+        v = (raw or {}).get(t)
+        if v is None or str(v).strip().lower() in ("", "none", "null", "nan", "n/a", "-"):
+            missing.append(_LABEL.get(t, t))
+    if not missing:
+        return ""
+    lines = ["", "【本次申请但未行】"]
+    lines += [f"  {m}：{phrase}" for m in missing]
+    return "\n".join(lines)
+
+
+def _fmt_table(name: str, row: dict) -> str:
+    """将数据库行格式化为 LLM 可读的文本"""
+    if not row:
+        return f"[{name}] 无数据"
+
+    items = []
+    for k, v in row.items():
+        if k in ("id", "hadm_id"):
+            continue
+        if v is None:
+            continue
+        label = _LABEL.get(k, k)
         items.append(f"  {label}: {v}")
     return f"[{name}]\n" + "\n".join(items)
 
@@ -155,49 +194,50 @@ def execute_take_history(hadm_id: str) -> str:
 
 def execute_oral_examination(hadm_id: str, **_) -> str:
     """执行口腔检查——查询数据库中的检查结果"""
-    exam = query_table("oral_examinations", hadm_id)
+    exam = _nonempty(query_table("oral_examinations", hadm_id))
     if not exam:
-        return "未行该检查"
+        return f"{NOT_DONE}：本病例未行口腔黏膜专科检查。"
 
     return _fmt_table("口腔黏膜专科检查结果", exam)
 
 
 def execute_lab_tests(hadm_id: str, lab_tests: list[str] = None, **kwargs) -> str:
     """查询化验结果"""
-    lab = query_table("lab_results", hadm_id)
+    raw = query_table("lab_results", hadm_id) or {}
+    lab = _nonempty(raw)
     if not lab:
-        return "未行该检查"
+        return f"{NOT_DONE}：本病例未行化验检查。"
 
-    # 如果指定了特定项目，只返回那些
-    if lab_tests:
-        # 返回全部但标注 Agent 申请了哪些
-        requested = {t: lab.get(t) for t in lab_tests if t in lab}
-        all_results = _fmt_table("化验结果（*为本次申请）", lab)
-        return all_results
-    return _fmt_table("化验结果", lab)
+    out = _fmt_table("化验结果（*为本次申请）" if lab_tests else "化验结果", lab)
+    out += _pending_block(lab_tests, raw, "未行该检验")
+    return out
 
 
 def execute_microbiology(hadm_id: str, micro_tests: list[str] = None, **kwargs) -> str:
     """查询微生物检查结果"""
-    micro = query_table("microbiology_results", hadm_id)
+    raw = query_table("microbiology_results", hadm_id) or {}
+    micro = _nonempty(raw)
     if not micro:
-        return "未行该检查"
-    return _fmt_table("微生物检查结果", micro)
+        return f"{NOT_DONE}：本病例未行微生物检查。"
+
+    out = _fmt_table("微生物检查结果", micro)
+    out += _pending_block(micro_tests, raw, "未行该检验")
+    return out
 
 
 def execute_pathology(hadm_id: str, **kwargs) -> str:
     """查询病理检查结果"""
-    path = query_table("pathology_results", hadm_id)
+    path = _nonempty(query_table("pathology_results", hadm_id))
     if not path:
-        return "未行该检查"
+        return f"{NOT_DONE}：本病例未行病理活检。"
     return _fmt_table("病理检查结果", path)
 
 
 def execute_tcm_four_diagnosis(hadm_id: str, **_) -> str:
     """查询中医四诊结果"""
-    tcm = query_table("tcm_four_diagnosis", hadm_id)
+    tcm = _nonempty(query_table("tcm_four_diagnosis", hadm_id))
     if not tcm:
-        return "未行该检查"
+        return f"{NOT_DONE}：本病例未行中医四诊检查。"
 
     lines = [
         "══════════ 中医四诊 ══════════",
