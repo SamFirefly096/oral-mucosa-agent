@@ -722,7 +722,7 @@ function resetSession() {
     desc = "选择病例开始模拟接诊。患者的诊断不会显示，请通过问诊自行判断。";
   } else {
     title = "患者咨询服务";
-    desc = "描述您的口腔问题，获得主任医师级专业建议。";
+    desc = "描述您的口腔问题，获取参考建议（仅供参考，不作为诊疗依据）。";
   }
   area.innerHTML = `<div class="empty-state"><div class="eicon">\u{1F4AC}</div>
     <div class="etitle">${title}</div><p>${desc}</p></div>`;
