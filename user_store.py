@@ -133,11 +133,15 @@ def create_user(username: str, password: str, role: str = "user", display_name: 
         if conn.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
             raise ValueError("用户名已存在")
         now = time.strftime("%Y-%m-%d %H:%M:%S")
-        cur = conn.execute(
-            "INSERT INTO users(username, password_hash, role, display_name, disabled, created_at)"
-            " VALUES(?,?,?,?,?,?)",
-            (username, _hash_password(password), role, display_name or "", 0, now),
-        )
+        try:
+            cur = conn.execute(
+                "INSERT INTO users(username, password_hash, role, display_name, disabled, created_at)"
+                " VALUES(?,?,?,?,?,?)",
+                (username, _hash_password(password), role, display_name or "", 0, now),
+            )
+        except sqlite3.IntegrityError:
+            # 并发注册同名账号时数据库 UNIQUE 约束兜底（多进程/多实例场景）
+            raise ValueError("用户名已存在")
         row = conn.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
     return _row_to_user(row)
 

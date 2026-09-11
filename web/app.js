@@ -1197,3 +1197,20 @@ document.addEventListener("om-lang-change", function () {
   try { if (typeof loadCases === "function") loadCases(); } catch (e) {}
   try { if (typeof renderUser === "function") renderUser(); } catch (e) {}
 });
+
+/* ── 弹层交互：点击空白处 / 按 Esc 关闭 ──────────────────────────
+ * 诊断填写面板（diagOverlay）除外：误触会让已填写的诊断内容丢失，
+ * 该面板只能用「取消 / 提交」按钮关闭。 */
+const NO_OUTSIDE_CLOSE = ["diagOverlay"];
+document.addEventListener("click", function (e) {
+  const ov = e.target.closest && e.target.closest(".sheet-overlay.show");
+  if (!ov || NO_OUTSIDE_CLOSE.indexOf(ov.id) >= 0) return;
+  if (e.target.closest(".sheet")) return;      // 点在弹层内容上不关闭
+  closeOverlay(ov.id);
+}, true);
+document.addEventListener("keydown", function (e) {
+  if (e.key !== "Escape") return;
+  document.querySelectorAll(".sheet-overlay.show").forEach(function (ov) {
+    if (NO_OUTSIDE_CLOSE.indexOf(ov.id) < 0) closeOverlay(ov.id);
+  });
+});
