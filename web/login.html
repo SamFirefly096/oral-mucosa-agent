@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
-<title>口腔黏膜病AI诊断Agent — 登录</title>
+<title>颐鉴 YIJIAN · 口腔黏膜病 AI 诊断 Agent — 登录</title>
+<link rel="icon" href="assets/yijian-64.png">
 <style>
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{height:100%}
@@ -18,6 +19,13 @@ body::after{content:'';position:absolute;width:360px;height:360px;border-radius:
 .wrap{position:relative;z-index:1;width:100%;max-width:420px;text-align:center}
 .logo{width:74px;height:74px;margin:0 auto 14px;background:rgba(255,255,255,.95);border-radius:22px;
   display:flex;align-items:center;justify-content:center;font-size:34px;line-height:1;box-shadow:0 12px 32px rgba(0,0,0,.28)}
+.brand-logo{width:92px;height:92px;margin:26px auto 10px;display:block;background:#fff;border-radius:50%;
+  padding:6px;box-shadow:0 14px 36px rgba(0,0,0,.30)}
+.brand-name{font-size:30px;letter-spacing:6px;color:#fff;font-weight:800;margin-bottom:4px}
+.lang-btn{position:absolute;top:12px;right:12px;z-index:5;background:rgba(255,255,255,.16);color:#fff;
+  border:1px solid rgba(255,255,255,.35);border-radius:999px;padding:5px 13px;font-size:12px;cursor:pointer;
+  backdrop-filter:blur(6px)}
+.lang-btn:hover{background:rgba(255,255,255,.28)}
 h1{color:#fff;font-size:22px;font-weight:700;letter-spacing:.5px;text-shadow:0 2px 8px rgba(0,0,0,.2)}
 .sub{color:rgba(255,255,255,.75);font-size:12px;margin-top:6px;letter-spacing:1px}
 
@@ -42,16 +50,18 @@ h1{color:#fff;font-size:22px;font-weight:700;letter-spacing:.5px;text-shadow:0 2
 
 .err{display:none;background:#fef2f2;border:1px solid #fecaca;color:#dc2626;font-size:12px;border-radius:10px;padding:9px 12px;margin-bottom:12px;line-height:1.5}
 .err.show{display:block}
-.tip{margin-top:16px;color:rgba(255,255,255,.6);font-size:11px;line-height:1.7}
+.tip{margin-top:16px;color:rgba(255,255,255,.62);font-size:11px;line-height:1.7;text-align:center}
 .tip b{color:rgba(255,255,255,.9);font-weight:600}
 @keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="logo">&#x1F9B7;</div>
-  <h1>口腔黏膜病AI诊断Agent</h1>
-  <p class="sub">中西医结合 · DeepSeek 智能诊疗</p>
+  <button class="lang-btn" data-lang-btn type="button" title="Switch to English">EN</button>
+  <img class="brand-logo" src="assets/yijian-emblem.svg" alt="颐鉴 YIJIAN">
+  <h1 class="brand-name">颐鉴</h1>
+  <p class="sub">中西医结合口腔黏膜病 AI 诊断智能体</p>
+  <p class="sub" style="font-size:11px;opacity:.75;margin-top:4px">中国中医科学院西苑医院 · 口腔科</p>
 
   <div class="card">
     <div class="seg">
@@ -85,6 +95,7 @@ h1{color:#fff;font-size:22px;font-weight:700;letter-spacing:.5px;text-shadow:0 2
   <p class="tip">管理员账号由系统内置，拥有最高权限。<br>新用户请先注册，各用户会话记录相互独立。</p>
 </div>
 
+<script src="i18n.js"></script>
 <script>
 (function(){
   // 若主页面携带令牌（旧链接 ?pw= 已被后端转成 ?t=）则直接进入

@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<link rel="icon" href="assets/yijian-64.png">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#12306e">
 <title>口腔黏膜病AI诊断Agent</title>
@@ -333,14 +334,17 @@ body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backgr
   <!-- 顶部栏 -->
   <header class="topbar">
     <div class="brand">
-      <span class="logo">&#x1F9B7;</span>
+      <img class="logo-img" src="assets/yijian-emblem.svg" alt="颐鉴"
+           style="width:34px;height:34px;display:block;background:#fff;border-radius:50%;padding:2px;box-shadow:0 2px 8px rgba(15,23,42,.12)">
       <div class="brand-txt">
-        <h1>口腔黏膜病 AI 诊断</h1>
+        <h1>颐鉴 · 口腔黏膜病 AI 诊断</h1>
         <div class="sub">中西医结合 · DeepSeek 智能诊疗</div>
       </div>
     </div>
     <div class="hdr-actions">
+      <button class="hbtn" id="tourBtn" onclick="OM_TOUR.start()">&#x1F4D6; 教程</button>
       <button class="hbtn" id="histBtn" onclick="openHistory()">&#x1F4C1; 历史</button>
+      <button class="hbtn" data-lang-btn type="button" title="Switch to English" style="min-width:44px">EN</button>
       <button class="avatar" id="userBtn" onclick="toggleUserMenu()" title="用户中心">&#x1F464;</button>
     </div>
   </header>
@@ -363,7 +367,7 @@ body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backgr
         <div class="case-row2">
           <button class="btn-exam" onclick="randomCase()" style="border-color:#ecd9a9;color:#8a5a06;background:#fffef8">&#x1F3B2; 随机</button>
           <label class="chip"><input type="checkbox" id="photoFilter" onchange="filterCases()"> 有照片</label>
-          <button class="btn-exam" onclick="handleStart()" style="flex:1;border-color:var(--primary);color:#fff;background:linear-gradient(135deg,#2563eb,#3b82f6);font-size:13px">&#x1F4A1; 开始问诊</button>
+          <button class="btn-exam" id="startBtn" onclick="handleStart()" style="flex:1;border-color:var(--primary);color:#fff;background:linear-gradient(135deg,#2563eb,#3b82f6);font-size:13px">&#x1F4A1; 开始问诊</button>
         </div>
       </div>
 
@@ -625,6 +629,8 @@ body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backgr
   </div>
 </div>
 
+<script src="i18n.js"></script>
+<script src="tour.js"></script>
 <script src="app.js?v=0.2.0"></script>
 </body>
 </html>

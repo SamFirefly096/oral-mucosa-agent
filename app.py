@@ -151,7 +151,7 @@ def _demo_surface(resp):
         banner = ('<div id="om-demo-banner" style="position:sticky;top:0;z-index:9999;'
                   'background:#fff7e6;border-bottom:1px solid #f0c36d;color:#8a5a00;'
                   "font:12px/1.6 -apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;"
-                  'padding:6px 12px;text-align:center">'
+                  'padding:6px 12px;text-align:center;pointer-events:none">'
                   '演示环境 · 病例均为虚构 · 不含真实患者数据 · AI 输出仅供教学参考，不作为诊疗依据</div>')
         body = body.replace("<body>", "<body>" + banner, 1)
     return app.response_class(body, mimetype=("text/html" if fname.endswith(".html") else "application/javascript"))

@@ -283,7 +283,7 @@ function onCaseChange() {
   const sel = document.getElementById("caseSelect");
   if (sel.value && cases.length) {
     const c = cases.find(x => x.id === sel.value);
-    if (c) document.getElementById("caseLabel").textContent = `${c.display} | ${c.age}岁${c.gender}`;
+    if (c) document.getElementById("caseLabel").textContent = `${c.display} | ${c.age}${t("岁")} ${t(c.gender)}`;
   }
 }
 
@@ -312,7 +312,7 @@ function startTraining(isTest) {
       document.getElementById("statusBar").style.display = "flex";
       document.getElementById("statusText").textContent = mode === "test" ? `测试中 (${testTitle})` : "问诊中";
       const cc = cases.find(x => x.id === cid);
-      document.getElementById("caseLabel").textContent = `${cc ? cc.display : cid} | ${d.patient_info.age}岁${d.patient_info.gender}`;
+      document.getElementById("caseLabel").textContent = `${cc ? cc.display : cid} | ${d.patient_info.age}${t("岁")} ${t(d.patient_info.gender)}`;
       document.getElementById("scorePanel").classList.remove("show");
       clearDiagForm();
     })
@@ -746,7 +746,7 @@ function applyRestoredSession(d, silent) {
     document.getElementById("statusText").textContent = mode === "test" ? `测试中 (${testTitle})` : "问诊中";
     const cc = cases.find(x => x.id === d.case_id);
     const pi = d.patient_info || {};
-    document.getElementById("caseLabel").textContent = `${cc ? cc.display : d.case_id} | ${pi.age || "?"}岁${pi.gender || ""}`;
+    document.getElementById("caseLabel").textContent = `${cc ? cc.display : d.case_id} | ${pi.age || "?"}${t("岁")} ${t(pi.gender || "")}`;
     const sel = document.getElementById("caseSelect");
     if (Array.from(sel.options).some(o => o.value === d.case_id)) sel.value = d.case_id;
   } else {
@@ -857,7 +857,7 @@ function filterCases() {
   getVisibleCases().forEach(c => {
     const opt = document.createElement("option");
     opt.value = c.id;
-    opt.textContent = `${c.display} | ${c.age}岁 ${c.gender}${c.has_photos ? " \u{1F4F7}" : ""}`;
+    opt.textContent = `${c.display} | ${c.age}${t("岁")} ${t(c.gender)}${c.has_photos ? " \u{1F4F7}" : ""}`;
     sel.appendChild(opt);
   });
   if (getVisibleCases().find(c => c.id === currentVal)) sel.value = currentVal;
@@ -1040,7 +1040,7 @@ function renderDebugTable() {
         <td>${escapeHTML(c.display)}</td><td style="color:#60a5fa;text-decoration:underline">${escapeHTML(c.id)}</td>
         <td>${escapeHTML(c.diagnosis) || "-"}</td><td style="color:#94a3b8">${escapeHTML(c.icd11) || "-"}</td>
         <td style="color:#fbbf24">${escapeHTML(c.tcm_syndrome) || "-"}</td>
-        <td>${c.age}岁/${c.gender}</td>
+        <td>${c.age}${t("岁")}/${t(c.gender)}</td>
         <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHTML(c.chief_complaint)}">${escapeHTML(c.chief_complaint) || "-"}</td>
         <td style="text-align:center">${c.has_photos ? `\u{1F4F7} ${c.photo_count || "有"}` : "-"}</td></tr>`;
     });
@@ -1190,4 +1190,10 @@ document.addEventListener("keydown", e => {
 document.addEventListener("DOMContentLoaded", () => {
   setupScrollButton();
   boot();
+});
+
+/* ── 界面语言切换后：重渲染动态列表（病例下拉/用户菜单等拼接串） ── */
+document.addEventListener("om-lang-change", function () {
+  try { if (typeof loadCases === "function") loadCases(); } catch (e) {}
+  try { if (typeof renderUser === "function") renderUser(); } catch (e) {}
 });
