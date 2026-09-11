@@ -9,6 +9,12 @@ let USER = null;
 /* ── 语音能力检测 ── */
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const HAS_TTS = typeof speechSynthesis !== "undefined";
+
+/* ── 演示实例上的管理员提示 ──────────────────────────────────────
+ * 演示环境为保护真实病例，服务端已关闭全部管理员功能（_require_admin 返回 None）。
+ * 若管理员误入演示站，菜单里那两个入口点了只会 403，这里改为明确说明。 */
+const OM_DEMO_SURFACE = location.pathname.indexOf("/demo") === 0;
+
 const SR_SECURE = !!(SR && window.isSecureContext);
 
 /* ── 全局状态 ── */
@@ -229,9 +235,26 @@ function renderUser() {
   document.getElementById("menuRole").innerHTML =
     `账号: <b style="color:#0f2f6f">${escapeHTML(USER.username)}</b>` +
     `<span class="role-pill ${USER.role === "admin" ? "admin" : ""}">${USER.role === "admin" ? "管理员 · 最高权限" : "普通用户"}</span>`;
-  // 管理员专属入口
-  document.getElementById("adminEntry").style.display = USER.role === "admin" ? "flex" : "none";
-  document.getElementById("debugEntry").style.display = USER.role === "admin" ? "flex" : "none";
+  // 管理员专属入口（演示实例上服务端已关闭管理员功能，入口隐藏并给出说明）
+  const isAdmin = USER.role === "admin";
+  const adminVisible = isAdmin && !OM_DEMO_SURFACE;
+  document.getElementById("adminEntry").style.display = adminVisible ? "flex" : "none";
+  document.getElementById("debugEntry").style.display = adminVisible ? "flex" : "none";
+  let hint = document.getElementById("demoAdminHint");
+  if (OM_DEMO_SURFACE && isAdmin) {
+    if (!hint) {
+      hint = document.createElement("div");
+      hint.id = "demoAdminHint";
+      hint.style.cssText = "margin:10px 0 2px;padding:10px 12px;border-radius:10px;background:#fff7e6;" +
+        "border:1px solid #f0c36d;color:#8a5a00;font-size:12px;line-height:1.75;text-align:left";
+      const anchor = document.querySelector("#menuOverlay .menu-user");
+      if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(hint, anchor.nextSibling);
+    }
+    hint.innerHTML = "演示环境为保护真实病例，已关闭管理员功能（病例全量数据、用户管理）。" +
+      "<br>如需管理，请改用生产入口并输入管理员密码。";
+  } else if (hint) {
+    hint.remove();
+  }
 }
 
 function setupDropClick() {

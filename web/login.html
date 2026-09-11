@@ -10,13 +10,14 @@
 html,body{height:100%}
 body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;
   background:linear-gradient(160deg,#0f2547 0%,#173e8f 45%,#2563eb 100%);
-  min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;position:relative;overflow:hidden}
-body::before{content:'';position:absolute;width:420px;height:420px;border-radius:50%;
+  min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:20px;position:relative;
+  overflow-x:hidden;overflow-y:auto;-webkit-overflow-scrolling:touch}
+body::before{content:'';position:fixed;width:420px;height:420px;border-radius:50%;
   background:radial-gradient(circle,rgba(255,255,255,.10),transparent 70%);top:-120px;right:-120px}
-body::after{content:'';position:absolute;width:360px;height:360px;border-radius:50%;
+body::after{content:'';position:fixed;width:360px;height:360px;border-radius:50%;
   background:radial-gradient(circle,rgba(56,189,248,.18),transparent 70%);bottom:-140px;left:-100px}
 
-.wrap{position:relative;z-index:1;width:100%;max-width:420px;text-align:center}
+.wrap{position:relative;z-index:1;width:100%;max-width:420px;text-align:center;margin:auto}
 .logo{width:74px;height:74px;margin:0 auto 14px;background:rgba(255,255,255,.95);border-radius:22px;
   display:flex;align-items:center;justify-content:center;font-size:34px;line-height:1;box-shadow:0 12px 32px rgba(0,0,0,.28)}
 .brand-logo{width:92px;height:92px;margin:26px auto 10px;display:block;background:#fff;border-radius:50%;

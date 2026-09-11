@@ -178,6 +178,8 @@
     "上一步": "Back",
     "下一步": "Next",
     "开始使用": "Start",
+    "演示环境为保护真实病例，已关闭管理员功能（病例全量数据、用户管理）。": "Administrator features are disabled in the demo environment to protect real patient cases (full case data and user management).",
+    "如需管理，请改用生产入口并输入管理员密码。": "For administration, please use the production entry point and enter the administrator password.",
     "输入用户名": "Enter username",
     "输入密码": "Enter password",
     "设置用户名": "Choose a username",

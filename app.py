@@ -187,13 +187,18 @@ def _demo_surface(resp):
             'background:#fff7e6;border-bottom:1px solid #f0c36d;color:#8a5a00;'
             "font:12px/1.6 -apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;"
             'padding:6px 12px;text-align:center;pointer-events:none;box-sizing:border-box;'
-            'letter-spacing:.2px}</style>'
+            'letter-spacing:.2px}'
+            '.app{top:var(--om-banner-h,0px)!important;'
+            'height:calc(var(--vh,100vh) - var(--om-banner-h,0px))!important}</style>'
             '<div id="om-demo-banner">演示环境 · 病例均为虚构 · 不含真实患者数据 · '
             'AI 输出仅供教学参考，不作为诊疗依据</div>'
             '<script>(function(){var b=document.getElementById("om-demo-banner");'
-            'function f(){if(b)document.body.style.paddingTop=b.offsetHeight+"px";}'
-            'f();window.addEventListener("resize",f);window.addEventListener("load",f);setTimeout(f,300);'
-            'setTimeout(f,1200);})();</script>')
+            'function f(){if(!b)return;var h=b.offsetHeight;'
+            'document.documentElement.style.setProperty("--om-banner-h",h+"px");'
+            'document.body.style.paddingTop=h+"px";}'
+            'f();window.addEventListener("resize",f);window.addEventListener("load",f);'
+            'if(window.visualViewport)window.visualViewport.addEventListener("resize",f);'
+            'setTimeout(f,300);setTimeout(f,1200);})();</script>')
         body = body.replace("<body>", "<body>" + banner, 1)
     return app.response_class(body, mimetype=("text/html" if fname.endswith(".html") else "application/javascript"))
 
