@@ -14,11 +14,53 @@ from flask import Flask, request, jsonify, send_from_directory, redirect
 from flask_cors import CORS
 from database import get_hpi_text, query_table, list_cases
 from agents_enhanced import ChiefMedAgent, RealisticPatientAgent, PatientContext
-from config import ACCESS_PASSWORD, PHOTO_DIR
+from config import (ACCESS_PASSWORD, PHOTO_DIR, MEDICAL_MODEL, PATIENT_MODEL,
+                    DEMO_MODE, DEMO_CASE_IDS, DEMO_MAX_SESSIONS, DEMO_MAX_TURNS,
+                    DEMO_DAILY_CAP, BASE_PATH)
 import user_store
 
 app = Flask(__name__, static_folder="web", static_url_path="")
 CORS(app)
+
+# ── 演示实例辅助 ─────────────────────────────
+def _count_user_sessions(uid):
+    """统计某账号已建立的会话数（磁盘为准，重启后依然有效）。"""
+    if not uid:
+        return 0
+    n = 0
+    try:
+        for fn in os.listdir(SESSION_DIR):
+            if not fn.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(SESSION_DIR, fn), encoding="utf-8") as f:
+                    if json.load(f).get("user_id") == uid:
+                        n += 1
+            except Exception:
+                continue
+    except FileNotFoundError:
+        return 0
+    return n
+
+
+def _count_today_sessions():
+    """统计今日新建会话数（用于全站熔断）。"""
+    import datetime as _dt
+    today = _dt.date.today()
+    n = 0
+    try:
+        for fn in os.listdir(SESSION_DIR):
+            if not fn.endswith(".json"):
+                continue
+            try:
+                if _dt.date.fromtimestamp(os.path.getmtime(os.path.join(SESSION_DIR, fn))) == today:
+                    n += 1
+            except Exception:
+                continue
+    except FileNotFoundError:
+        return 0
+    return n
+
 
 # ── 认证 ─────────────────────────────────────
 def _current_user():
@@ -38,7 +80,22 @@ PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/register"}
 def check_auth():
     """API 需登录令牌；照片与静态资源免鉴权（由前端控制跳转）。"""
     p = request.path
-    if p.startswith("/api/photo/") or p.startswith("/favicon"):
+    if p.startswith("/favicon"):
+        return None
+    if p.startswith("/api/photos/"):
+        # 照片清单：演示实例一律不提供
+        if DEMO_MODE:
+            return jsonify({"error": "演示环境不提供临床照片"}), 403
+        if _current_user() is None:
+            return jsonify({"error": "未登录或登录已过期"}), 401
+        return None
+    if p.startswith("/api/photo/"):
+        # 临床照片：<img> 无法携带自定义请求头，改为接受 ?t=<令牌>；
+        # 演示实例一律不提供真实照片。
+        if DEMO_MODE:
+            return jsonify({"error": "演示环境不提供临床照片"}), 403
+        if _current_user() is None:
+            return jsonify({"error": "未登录或登录已过期"}), 401
         return None
     if p.startswith("/") and p.endswith(".html") or p in ("/", "/index.html", "/app.js"):
         # 页面骨架无需鉴权；旧链接 ?pw= 兼容：正确则自动登录 admin 并携带令牌跳转
@@ -54,6 +111,48 @@ def check_auth():
         if _current_user() is None:
             return jsonify({"error": "未登录或登录已过期"}), 401
     return None
+
+
+def _photo_url(rel):
+    """临床照片 URL：附加当前请求的令牌（<img> 无法带自定义头）。"""
+    rel = rel.replace(os.sep, "/")
+    tok = (request.headers.get("X-Auth-Token", "") or request.args.get("t", "")).strip()
+    return "/api/photo/" + rel + (("?t=" + tok) if tok else "")
+
+@app.after_request
+def _demo_surface(resp):
+    """演示实例的页面改写：① 子路径部署时给绝对路径加前缀 ② 顶部插入免责横幅。
+    静态文件直接从磁盘读原文重建响应（Flask 静态响应是流式的，不能就地改写）。"""
+    if not (BASE_PATH or DEMO_MODE):
+        return resp
+    p = request.path
+    if p not in ("/", "/index.html", "/login.html", "/app.js"):
+        return resp
+    fname = "index.html" if p in ("/", "/index.html") else p.lstrip("/")
+    fpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", fname)
+    try:
+        with open(fpath, encoding="utf-8") as f:
+            body = f.read()
+    except Exception:
+        return resp
+    if BASE_PATH:
+        for a, b in (('"/api/', '"' + BASE_PATH + '/api/'), ("'/api/", "'" + BASE_PATH + "/api/"),
+                     ("`/api/", "`" + BASE_PATH + "/api/"),
+                     ('"/login.html"', '"' + BASE_PATH + '/login.html"'),
+                     ("'/login.html'", "'" + BASE_PATH + "/login.html'"),
+                     ('"/index.html"', '"' + BASE_PATH + '/index.html"'),
+                     ('location.replace("/")', 'location.replace("' + BASE_PATH + '/")'),
+                     ('src="app.js', 'src="' + BASE_PATH + '/app.js')):
+            body = body.replace(a, b)
+    if DEMO_MODE and fname.endswith(".html") and "om-demo-banner" not in body and "<body>" in body:
+        banner = ('<div id="om-demo-banner" style="position:sticky;top:0;z-index:9999;'
+                  'background:#fff7e6;border-bottom:1px solid #f0c36d;color:#8a5a00;'
+                  "font:12px/1.6 -apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;"
+                  'padding:6px 12px;text-align:center">'
+                  '演示环境 · 病例均为虚构 · 不含真实患者数据 · AI 输出仅供教学参考，不作为诊疗依据</div>')
+        body = body.replace("<body>", "<body>" + banner, 1)
+    return app.response_class(body, mimetype=("text/html" if fname.endswith(".html") else "application/javascript"))
+
 
 # Photo mapping: hadm_id -> list of photo subdirectory names
 import glob as _glob
@@ -97,7 +196,11 @@ def _agent_from_dict(d, ctx=None):
     if not d:
         return None
     t = d.get("type")
-    model = d.get("model", "deepseek-chat")
+    model = d.get("model", "") or ""
+    if model == "deepseek-chat" or model == "deepseek-v4-pro":
+        model = ""  # 旧模型名统一迁移到当前默认
+    if not model:
+        model = PATIENT_MODEL if t == "RealisticPatientAgent" else MEDICAL_MODEL
     agent = None
     if t == "RealisticPatientAgent":
         agent = RealisticPatientAgent(model=model)
@@ -404,6 +507,8 @@ def get_cases():
     cases = []
     for row in list_cases():
         hid = row[0]
+        if DEMO_MODE and DEMO_CASE_IDS and hid not in DEMO_CASE_IDS:
+            continue
         cases.append({
             "id": hid,
             "display": _get_display_code(hid),
@@ -466,7 +571,7 @@ def case_full_detail(case_id):
             if os.path.isdir(dpath):
                 for ext in ["*.jpg","*.JPG","*.png","*.PNG","*.jpeg","*.JPEG"]:
                     for f in sorted(_glob.glob(os.path.join(dpath, "**", ext), recursive=True)):
-                        photos.append("/api/photo/" + os.path.relpath(f, PHOTO_DIR).replace(os.sep, "/"))
+                        photos.append(_photo_url(os.path.relpath(f, PHOTO_DIR)))
         result["photos"] = photos
     return jsonify(result)
 
@@ -537,6 +642,16 @@ def start_chat():
         # Medical student interviews a realistic patient
         if not case_id:
             return jsonify({"error": "请选择训练病例"}), 400
+        if DEMO_MODE:
+            if DEMO_CASE_IDS and case_id not in DEMO_CASE_IDS:
+                return jsonify({"error": "演示环境仅开放部分虚构病例"}), 403
+            u = _current_user() or {}
+            n = _count_user_sessions(u.get("id"))
+            if n >= DEMO_MAX_SESSIONS:
+                return jsonify({"error": f"演示环境每个账号最多创建 {DEMO_MAX_SESSIONS} 次问诊，"
+                                         f"可先删除历史会话再试"}), 429
+            if _count_today_sessions() >= DEMO_DAILY_CAP:
+                return jsonify({"error": "今日体验人数已满，请稍后再试或联系作者"}), 429
 
         patient = query_table("patients", case_id)
         cc = query_table("chief_complaints", case_id)
@@ -548,7 +663,7 @@ def start_chat():
                             age=patient.get("age"), gender=patient.get("gender"))
 
         # Realistic patient for training/test
-        pat = RealisticPatientAgent(model="deepseek-chat")
+        pat = RealisticPatientAgent(model=PATIENT_MODEL)
         pat.init_with_patient(ctx)
 
         # Test mode extras
@@ -594,7 +709,7 @@ def start_chat():
 
     elif mode == "consult":
         # Patient consults Chief Physician
-        chief = ChiefMedAgent(thinking=False, model="deepseek-chat")
+        chief = ChiefMedAgent(thinking=False, model=MEDICAL_MODEL)
         sessions[session_id] = {
             "mode": mode,
             "doctor_agent": chief,
@@ -629,6 +744,10 @@ def send_message():
     session, err = _session_access(session_id)
     if err:
         return jsonify(err[0]), err[1]
+
+    if DEMO_MODE and len(session.get("history") or []) >= DEMO_MAX_TURNS:
+        return jsonify({"error": f"演示环境单次问诊最多 {DEMO_MAX_TURNS} 轮，"
+                                 f"可结束本次问诊后重新开始"}), 429
 
     if session["mode"] in ("training", "test"):
         # Student sends message -> Realistic patient responds
@@ -686,7 +805,7 @@ def list_photos(case_id):
         for ext in ["*.jpg", "*.JPG", "*.png", "*.PNG", "*.jpeg", "*.JPEG"]:
             for f in sorted(glob.glob(os.path.join(dpath, "**", ext), recursive=True)):
                 rel = os.path.relpath(f, PHOTO_DIR)
-                photos.append(f"/api/photo/{rel.replace(os.sep, '/')}")
+                photos.append(_photo_url(rel))
 
     return jsonify({"photos": photos[:20], "count": len(photos)})
 
@@ -858,7 +977,7 @@ def request_examination():
                 for ext in ["*.jpg", "*.JPG", "*.png", "*.PNG", "*.jpeg", "*.JPEG"]:
                     for f in sorted(_glob.glob(os.path.join(dpath, "**", ext), recursive=True)):
                         rel = os.path.relpath(f, PHOTO_DIR)
-                        photos.append(f"/api/photo/{rel.replace(os.sep, '/')}")
+                        photos.append(_photo_url(rel))
 
     return jsonify({"result": result_text, "tool": tool_name,
                     "label": labels.get(tool_name, tool_name), "photos": photos})
@@ -1174,10 +1293,10 @@ def tutor_review():
 
     try:
         from openai import OpenAI
-        from config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL
+        from config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, MEDICAL_MODEL
         client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
         resp = client.chat.completions.create(
-            model="deepseek-chat", temperature=0.3,
+            model=MEDICAL_MODEL, temperature=0.3,
             messages=[{"role": "user", "content": prompt}],
         )
         review = resp.choices[0].message.content

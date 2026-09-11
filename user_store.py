@@ -15,7 +15,7 @@ import time
 
 from config import PROJECT_ROOT, ACCESS_PASSWORD
 
-DB_PATH = PROJECT_ROOT / "data" / "users.db"
+DB_PATH = os.environ.get("OM_USERS_DB") or (PROJECT_ROOT / "data" / "users.db")
 _PBKDF2_ITER = 120_000
 _TOKEN_DAYS = 30  # 令牌有效期（天）
 _lock = threading.Lock()
