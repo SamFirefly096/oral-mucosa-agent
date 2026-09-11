@@ -429,8 +429,11 @@
       b.textContent = lang === "en" ? "中文" : "EN";
       b.title = lang === "en" ? "切换到中文" : "Switch to English";
     });
-    document.dispatchEvent(new CustomEvent("om-lang-change", { detail: { lang: lang } }));
-    if (opts && opts.silent) return;
+    // 启动时应用已保存的语言属于初始化，不派发事件——
+    // 否则 app.js 的重渲染回调会先于 boot() 取到令牌而触发 401 误判
+    if (!(opts && opts.silent)) {
+      document.dispatchEvent(new CustomEvent("om-lang-change", { detail: { lang: lang } }));
+    }
   }
 
   window.t = t;

@@ -1217,6 +1217,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 /* ── 界面语言切换后：重渲染动态列表（病例下拉/用户菜单等拼接串） ── */
 document.addEventListener("om-lang-change", function () {
+  if (!TOKEN || !USER) return;   // 尚未登录/尚未取到令牌时不请求，避免误判 401
   try { if (typeof loadCases === "function") loadCases(); } catch (e) {}
   try { if (typeof renderUser === "function") renderUser(); } catch (e) {}
 });

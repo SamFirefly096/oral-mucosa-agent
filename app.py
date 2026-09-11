@@ -138,7 +138,8 @@ def check_auth():
         if pw and pw == ACCESS_PASSWORD:
             admin = user_store.ensure_admin()
             token = user_store.grant_token(admin["id"])
-            return redirect(f"/?t={token}")
+            # 同时种下闸门 Cookie，这样以后直接输域名也不会再被送去演示版
+            return _set_admin_cookie(redirect(f"/?t={token}"), token)
         return None
     if p.startswith("/api/"):
         if p in PUBLIC_API_PATHS:
