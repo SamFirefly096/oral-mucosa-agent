@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<link rel="icon" href="assets/yijian-64.png">
+<link rel="icon" href="assets/favicon-64.png">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#12306e">
 <title>口腔黏膜病AI诊断Agent</title>
@@ -327,6 +327,21 @@ body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backgr
   .grip{display:none}
 }
 </style>
+<style>
+/* 移动端顶栏适配：品牌区可压缩 + 按钮文字在窄屏收起，避免标题折行压住副标题 */
+.brand-txt{min-width:0;overflow:hidden}
+.brand-txt h1{overflow:hidden;text-overflow:ellipsis}
+.brand .logo-img{flex:none}
+@media (max-width:520px){
+  .topbar{padding-left:10px;padding-right:10px;gap:6px}
+  .brand{gap:7px}
+  .brand-txt h1{font-size:14px;letter-spacing:0}
+  .brand-txt .sub{font-size:9px;letter-spacing:.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .hbtn{padding:6px 9px;gap:3px}
+  .hbtn-txt{display:none}
+  .hdr-actions{gap:5px}
+}
+</style>
 </head>
 <body>
 
@@ -334,16 +349,16 @@ body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backgr
   <!-- 顶部栏 -->
   <header class="topbar">
     <div class="brand">
-      <img class="logo-img" src="assets/yijian-emblem.svg" alt="颐鉴"
-           style="width:34px;height:34px;display:block;background:#fff;border-radius:50%;padding:2px;box-shadow:0 2px 8px rgba(15,23,42,.12)">
+      <img class="logo-img" src="assets/xiyuan-logo.png" alt="中国中医科学院西苑医院"
+           style="width:38px;height:38px;display:block;background:#fff;border-radius:50%;padding:3px;box-shadow:0 2px 8px rgba(15,23,42,.12)">
       <div class="brand-txt">
         <h1>颐鉴 · 口腔黏膜病 AI 诊断</h1>
         <div class="sub">中西医结合 · DeepSeek 智能诊疗</div>
       </div>
     </div>
     <div class="hdr-actions">
-      <button class="hbtn" id="tourBtn" onclick="OM_TOUR.start()">&#x1F4D6; 教程</button>
-      <button class="hbtn" id="histBtn" onclick="openHistory()">&#x1F4C1; 历史</button>
+      <button class="hbtn" id="tourBtn" onclick="OM_TOUR.start()" title="教程">&#x1F4D6; <span class="hbtn-txt">教程</span></button>
+      <button class="hbtn" id="histBtn" onclick="openHistory()" title="历史">&#x1F4C1; <span class="hbtn-txt">历史</span></button>
       <button class="hbtn" data-lang-btn type="button" title="Switch to English" style="min-width:44px">EN</button>
       <button class="avatar" id="userBtn" onclick="toggleUserMenu()" title="用户中心">&#x1F464;</button>
     </div>
