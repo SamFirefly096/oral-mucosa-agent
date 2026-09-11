@@ -69,6 +69,9 @@ def _current_user():
     return user_store.resolve_token(token.strip()) if token else None
 
 def _require_admin():
+    # 演示实例不开放任何管理员功能（病例全量数据、用户管理等一律拒绝）
+    if DEMO_MODE:
+        return None
     u = _current_user()
     if u and u["role"] == "admin":
         return u
