@@ -56,7 +56,8 @@ def main():
             arr = json.loads(r[1] or "[]")
         except Exception:
             continue
-        new = [tr.get(str(x).strip(), x) for x in arr]
+        # 注意：占位值 "none" 必须原样保留——get_hpi_text() 依赖 s != "none" 过滤后显示「无特殊」
+        new = [x if str(x).strip().lower() == "none" else tr.get(str(x).strip(), x) for x in arr]
         if new != arr:
             cells += 1
             if not a.dry_run:
