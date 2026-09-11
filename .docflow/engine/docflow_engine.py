@@ -6,7 +6,7 @@ docflow_engine.py — 文档工作流引擎
 用法:
   docflow_engine.py decode <out_path>          # stdin 为 base64 文本 → 解码写二进制文件
   docflow_engine.py extract <file>             # 提取文本 → stdout JSON {ok, format, text, chars, pages, slides, paragraphs, tables}
-  docflow_engine.py create <fmt> <out_path>    # stdin 为 spec JSON → 生成精美文档 (docx/pptx/pdf/md/txt)
+  docflow_engine.py create <fmt> <out_path>    # stdin 为 spec JSON → 生成精美文档 (docx/doc/pptx/pdf/md/txt)
   docflow_engine.py edit   <fmt> <in> <out>    # stdin 为 spec JSON(ops) → 修改文档
   docflow_engine.py meta   <file>              # 元数据 → stdout JSON
 
@@ -34,6 +34,7 @@ import re
 import time
 import datetime
 import math
+import copy
 
 
 # 多用户路径栅栏根目录（None=管理员，不限路径；字符串=普通用户根，越界即拒绝）
@@ -316,7 +317,7 @@ def parse_md(text):
                 i += 1
             sections.append({"type": "quote", "text": " ".join(quote)})
             continue
-        m = re.match(r"^!\[([^\]]*)\]\(([^)]+)\)\s*$", line)
+        m = re.match(r"^!\[(.*)\]\(([^)]+)\)\s*$", line)
         if m:
             sections.append({"type": "image", "src": m.group(2).strip(), "alt": m.group(1).strip()})
             i += 1
@@ -349,14 +350,15 @@ def parse_md(text):
                 i += 1
             sections.append({"type": "bullets", "items": items})
             continue
-        m = re.match(r"^(\s*)\d+[\.、)]\s*(.*)$", line)
+        m = re.match(r"^(\s*)(\d+)[\.、)]\s*(.*)$", line)
         if m:
-            items = [m.group(2)]
+            start = int(m.group(2))
+            items = [m.group(3)]
             i += 1
             while i < n and re.match(r"^\s*\d+[\.、)]\s+", lines[i]):
                 items.append(re.sub(r"^\s*\d+[\.、)]\s+", "", lines[i]).strip())
                 i += 1
-            sections.append({"type": "numbered", "items": items})
+            sections.append({"type": "numbered", "items": items, "start": start})
             continue
         para = [line.strip()]
         i += 1
@@ -403,6 +405,61 @@ def _cite_segments(text):
     if pos < len(text):
         segs.append((text[pos:], False))
     return segs
+
+
+def render_docx_plain(spec, out_path):
+    """纯文本风格的 Word 输出：无封面/无主题色/无页眉页脚/无加粗，
+    全部使用 Word 默认样式，仅保留数字编号与分段（适合意见清单/提纲）。"""
+    from docx import Document
+    from docx.shared import Pt
+
+    doc = Document()
+
+    def add_line(text, indent=0):
+        p = doc.add_paragraph()
+        if indent:
+            p.paragraph_format.left_indent = Pt(indent)
+        p.add_run(str(text))
+        return p
+
+    title = (spec.get("title") or "").strip()
+    if title:
+        add_line(title)
+    for key in ("subtitle", "author", "date"):
+        v = (spec.get(key) or "").strip()
+        if v:
+            add_line(v)
+    if title:
+        doc.add_paragraph()
+
+    sections = content_sections(spec)
+    for idx, s in enumerate(sections):
+        typ = s.get("type")
+        if typ in ("h1", "h2", "h3"):
+            add_line(s.get("text", ""))
+        elif typ == "p":
+            add_line(s.get("text", ""))
+        elif typ == "bullets":
+            for it in s.get("items", []):
+                add_line("• " + str(it), 12)
+        elif typ == "numbered":
+            st = int(s.get("start") or 1)
+            for i, it in enumerate(s.get("items", []), st):
+                add_line("%d. %s" % (i, it), 12)
+        elif typ == "quote":
+            add_line(s.get("text", ""), 18)
+        elif typ == "table":
+            headers = s.get("headers") or []
+            if headers:
+                add_line(" | ".join(str(c) for c in headers))
+            for r in s.get("rows", []):
+                add_line(" | ".join(str(c) for c in r))
+        elif typ == "divider":
+            pass
+        # 块间留一个空行（最后一块除外）
+        if idx < len(sections) - 1:
+            doc.add_paragraph()
+    doc.save(out_path)
 
 
 def render_docx(spec, out_path):
@@ -611,7 +668,8 @@ def render_docx(spec, out_path):
                     if _sup:
                         rt.font.superscript = True
         elif typ == "numbered":
-            for n, it in enumerate(s.get("items", []), 1):
+            st = int(s.get("start") or 1)
+            for n, it in enumerate(s.get("items", []), st):
                 p = doc.add_paragraph()
                 pf = p.paragraph_format
                 pf.left_indent = Pt(22)
@@ -739,6 +797,11 @@ def edit_docx(spec, in_path, out_path):
     t = theme(spec.get("theme"))
     doc = Document(in_path)
     ops = spec.get("ops") or []
+    track = bool(spec.get("trackChanges"))
+    tc_state = {"seq": 1000 if track else 0,
+                "author": str(spec.get("author") or "docflow 修订"),
+                "date": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")}
+    comment_ops = []
 
     def cell_shade_fill(cell):
         tcPr = cell._tc.find(qn("w:tcPr"))
@@ -756,13 +819,22 @@ def edit_docx(spec, in_path, out_path):
             repl = op.get("replace", "")
             if not find:
                 continue
-            for p in doc.paragraphs:
-                replace_in_paragraph(p, find, repl)
-            for tb in doc.tables:
-                for row in tb.rows:
-                    for cell in row.cells:
-                        for p in cell.paragraphs:
-                            replace_in_paragraph(p, find, repl)
+            if track:
+                for p in doc.paragraphs:
+                    _track_replace_paragraph(p._p, find, repl, tc_state)
+                for tb in doc.tables:
+                    for row in tb.rows:
+                        for cell in row.cells:
+                            for p in cell.paragraphs:
+                                _track_replace_paragraph(p._p, find, repl, tc_state)
+            else:
+                for p in doc.paragraphs:
+                    replace_in_paragraph(p, find, repl)
+                for tb in doc.tables:
+                    for row in tb.rows:
+                        for cell in row.cells:
+                            for p in cell.paragraphs:
+                                replace_in_paragraph(p, find, repl)
         elif typ == "set-title":
             title = (op.get("title") or "").strip()
             if not title:
@@ -775,15 +847,39 @@ def edit_docx(spec, in_path, out_path):
             if target is None and doc.paragraphs:
                 target = doc.paragraphs[0]
             if target is not None:
-                if target.runs:
+                if track:
+                    cur = "".join(r.text for r in target.runs)
+                    if cur:
+                        _track_replace_paragraph(target._p, cur, title, tc_state)
+                    else:
+                        r = target.add_run(title)
+                        tc_state["seq"] += 1
+                        ins = _tc_marker("ins", {"id": tc_state["seq"], "author": tc_state["author"], "date": tc_state["date"]})
+                        r._r.addprevious(ins)
+                        ins.append(r._r)
+                elif target.runs:
                     target.runs[0].text = title
                     for r in target.runs[1:]:
                         r.text = ""
                 else:
                     target.add_run(title)
         elif typ == "append":
-            for s in content_sections(op):
-                _docx_append_section(doc, s, t)
+            if track:
+                p0, tb0 = len(doc.paragraphs), len(doc.tables)
+                for s in content_sections(op):
+                    _docx_append_section(doc, s, t)
+                for p in doc.paragraphs[p0:]:
+                    _wrap_runs_in_ins([p._p], tc_state)
+                for tb in doc.tables[tb0:]:
+                    for row in tb.rows:
+                        for cell in row.cells:
+                            for p in cell.paragraphs:
+                                _wrap_runs_in_ins([p._p], tc_state)
+            else:
+                for s in content_sections(op):
+                    _docx_append_section(doc, s, t)
+        elif typ == "comment":
+            comment_ops.append(op)
         elif typ == "restyle":
             accent = (op.get("accent") or "").strip()
             if not re.fullmatch(r"#[0-9A-Fa-f]{6}", accent):
@@ -825,6 +921,9 @@ def edit_docx(spec, in_path, out_path):
                                 except Exception:
                                     pass
     doc.save(out_path)
+    if comment_ops:
+        cl = [{"find": o.get("find", ""), "comment": o.get("comment") or o.get("text") or ""} for o in comment_ops]
+        add_docx_comments(out_path, cl, out_path, author=(spec.get("author") or "docflow"))
 
 
 def _docx_append_section(doc, s, t):
@@ -958,7 +1057,8 @@ def _docx_append_section(doc, s, t):
                 if _sup:
                     rt.font.superscript = True
     elif typ == "numbered":
-        for n, it in enumerate(s.get("items", []), 1):
+        st = int(s.get("start") or 1)
+        for n, it in enumerate(s.get("items", []), st):
             p = doc.add_paragraph()
             pf = p.paragraph_format
             pf.left_indent = Pt(22)
@@ -1041,9 +1141,41 @@ def extract_docx(path):
                     t = "".join(x.text or "" for x in tc.iter(qn("w:t")))
                     cells.append(t.strip())
                 parts.append(" | ".join(cells))
+    text = "\n".join(p for p in parts if p)
+    # 脚注/尾注/页眉页脚：基金项目、作者简介、通讯作者邮箱等常位于首页脚注，
+    # 必须并入提取结果，否则审阅/解析会漏检
+    extras = []
+    try:
+        import zipfile
+        with zipfile.ZipFile(path) as _z:
+            for _part, _label in (("word/footnotes.xml", "脚注"), ("word/endnotes.xml", "尾注")):
+                try:
+                    xml = _z.read(_part).decode("utf-8", errors="replace")
+                except KeyError:
+                    continue
+                tts = [t for t in re.findall(r"<w:t[^>]*>([^<]*)</w:t>", xml) if t.strip()]
+                if tts:
+                    extras.append("【%s】\n%s" % (_label, "\n".join(tts)))
+            for _i in range(0, 12):
+                got = False
+                for _pref in ("header", "footer"):
+                    try:
+                        xml = _z.read("word/%s%d.xml" % (_pref, _i)).decode("utf-8", errors="replace")
+                    except KeyError:
+                        continue
+                    got = True
+                    tts = [t for t in re.findall(r"<w:t[^>]*>([^<]*)</w:t>", xml) if t.strip()]
+                    if tts:
+                        extras.append("【页眉页脚】\n%s" % "\n".join(tts))
+                if not got and _i > 0:
+                    break
+    except Exception:
+        pass
+    if extras:
+        text = text + "\n\n" + "\n\n".join(extras)
     return {
         "format": "docx",
-        "text": "\n".join(p for p in parts if p),
+        "text": text,
         "paragraphs": paras,
         "tables": tables,
     }
@@ -1144,10 +1276,79 @@ def extract_image(path):
         return {"format": ext_of(path) or "image", "text": "", "error": str(e)}
 
 
+def _conv_tmp():
+    """LibreOffice 转换临时目录：普通用户模式下必须落在用户根内（沙箱 workspace-write）。"""
+    if FENCE_ROOT:
+        d = os.path.join(FENCE_ROOT, ".docflow", "tmp")
+    else:
+        d = os.path.join(ROOT, "tmp")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        d = os.path.join(ROOT, "tmp")
+        os.makedirs(d, exist_ok=True)
+    return d
+
+
+def soffice_convert(src, target_fmt, filter=None):
+    """用 LibreOffice headless 把 src 转换为 target_fmt（如 docx/doc/html），返回输出路径。
+    filter 可显式指定 LO 导出过滤器名（如 'docx:MS Word 2007 XML'），绕开个别源格式的自动映射缺失。
+
+    转换失败（未安装 soffice / 无输出文件 / 超时）直接 err 退出。
+    """
+    import subprocess
+    import shutil
+    import uuid
+
+    src = str(src)
+    if not os.path.exists(src):
+        err("转换失败：源文件不存在 %s" % src)
+    sof = shutil.which("soffice") or ("/usr/bin/soffice" if os.path.exists("/usr/bin/soffice") else None)
+    if not sof:
+        err("转换失败：系统未安装 LibreOffice（soffice），无法处理该格式")
+    tmp = _conv_tmp()
+    base = "conv_%s_%s" % (os.getpid(), uuid.uuid4().hex[:8])
+    work = os.path.join(tmp, base)
+    try:
+        os.makedirs(work, exist_ok=True)
+    except Exception:
+        work = tmp
+    # UserInstallation 指向本目录，避免 LibreOffice 把用户配置写到沙箱外
+    env = dict(os.environ, HOME=work, XDG_CONFIG_HOME=work)
+    cmd = [sof, "--headless", "--norestore", "--nolockcheck",
+           "-env:UserInstallation=file://" + os.path.join(work, "lo_profile"),
+           "--convert-to", filter or target_fmt, "--outdir", work, src]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=180, env=env)
+    except subprocess.TimeoutExpired:
+        err("LibreOffice 转换超时（180s）：%s" % src)
+    except Exception as e:
+        err("LibreOffice 转换失败：%s" % e)
+    base_name = os.path.splitext(os.path.basename(src))[0]
+    try:
+        base_name = re.sub(r"[^\w.\-]", "_", base_name) or "out"
+    except Exception:
+        base_name = "out"
+    cand = os.path.join(work, base_name + "." + target_fmt)
+    if not os.path.exists(cand):
+        err("LibreOffice 转换失败（未产生 .%s）：%s" % (target_fmt, proc.stderr.decode("utf-8", errors="replace")[:600] or src))
+    return cand
+
+
+def extract_doc(path):
+    """旧版 .doc（Word 97-2003）：LibreOffice 转 docx 后按 docx 提取，保留段落/表格统计。"""
+    conv = soffice_convert(path, "docx")
+    r = extract_docx(conv)
+    r["format"] = "doc"
+    return r
+
+
 def extract_any(path):
     fmt = ext_of(path)
     if fmt == "docx":
         return extract_docx(path)
+    if fmt == "doc":
+        return extract_doc(path)
     if fmt == "pptx":
         return extract_pptx(path)
     if fmt == "pdf":
@@ -1159,6 +1360,778 @@ def extract_any(path):
     if fmt in ("png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"):
         return extract_image(path)
     return {"format": fmt, "text": ""}
+
+
+# ===========================================================================
+# Word 修订（track changes）/ 批注（comments）/ 在线预览与保存
+# ===========================================================================
+_NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_NS_XML = "http://www.w3.org/XML/1998/namespace"
+
+
+def _w(tag):
+    return "{%s}%s" % (_NS_W, tag)
+
+
+def _clone_run_with_text(r_el, text, text_tag="t"):
+    from lxml import etree
+    new = etree.Element(_w("r"))
+    for ch in r_el:
+        if ch.tag != _w("t") and ch.tag != _w("delText"):
+            new.append(copy.deepcopy(ch))
+    if text:
+        t = etree.SubElement(new, _w(text_tag))
+        t.set("{%s}space" % _NS_XML, "preserve")
+        t.text = text
+    return new
+
+
+def _tc_marker(tag, attrs):
+    from lxml import etree
+    el = etree.Element(_w(tag))
+    for k, v in (attrs or {}).items():
+        el.set(_w(k), str(v))
+    return el
+
+
+def _track_replace_paragraph(p_el, find, repl, state):
+    """在一个 w:p 元素上做修订式替换：被删文本 → w:del/w:delText，新文本 → w:ins/w:t。"""
+    runs = [ch for ch in p_el if ch.tag == _w("r")]
+    if not runs:
+        return False
+    node_map = []
+    acc = 0
+    for r in runs:
+        for t in r.findall(_w("t")):
+            txt = t.text or ""
+            node_map.append((t, r, acc, acc + len(txt)))
+            acc += len(txt)
+        # 空白 run（无 w:t）也存在：append 到 map 便于定位？跳过（不影响全文匹配）
+    full = "".join(t.text or "" for t, _, _, _ in node_map)
+    i = full.find(find)
+    if i < 0:
+        return False
+    j = i + len(find)
+
+    def locate(pos):
+        for k in range(len(node_map)):
+            t, r, s, e = node_map[k]
+            if s <= pos < e:
+                return k, pos - s
+        for k in range(len(node_map) - 1, -1, -1):
+            t, r, s, e = node_map[k]
+            if s <= pos <= e:
+                return k, pos - s
+        return None, None
+
+    k1, o1 = locate(i)
+    k2, o2 = locate(j)
+    if k1 is None:
+        return False
+    t1, r1, _, _ = node_map[k1]
+    t2, r2, _, _ = node_map[k2] if k2 is not None else (None, None, None, None)
+    deleted = full[i:j]
+    state["seq"] += 1
+    del_el = _tc_marker("del", {"id": state["seq"], "author": state["author"], "date": state["date"]})
+    del_el.append(_clone_run_with_text(r1, deleted, "delText"))
+    state["seq"] += 1
+    ins_el = _tc_marker("ins", {"id": state["seq"], "author": state["author"], "date": state["date"]})
+    ins_el.append(_clone_run_with_text(r1, repl or "", "t"))
+
+    children = list(p_el)
+    ci1 = children.index(r1)
+    ci2 = children.index(r2) if r2 is not None else ci1
+    pieces = []
+    if k1 == k2:
+        pre = (t1.text or "")[:o1]
+        suf = (t1.text or "")[o2:]
+        if pre:
+            pieces.append(_clone_run_with_text(r1, pre))
+        pieces.append(del_el)
+        pieces.append(ins_el)
+        if suf:
+            pieces.append(_clone_run_with_text(r1, suf))
+    else:
+        pre = (t1.text or "")[:o1]
+        suf2 = (t2.text or "")[o2:]
+        if pre:
+            pieces.append(_clone_run_with_text(r1, pre))
+        pieces.append(del_el)
+        pieces.append(ins_el)
+        if suf2:
+            pieces.append(_clone_run_with_text(r2, suf2))
+    new_children = children[:ci1] + pieces + children[ci2 + 1:]
+    for ch in list(p_el):
+        p_el.remove(ch)
+    for ch in new_children:
+        p_el.append(ch)
+    return True
+
+
+def _wrap_runs_in_ins(elements, state):
+    """把给定元素树中的每个 w:r 用 w:ins 包起来，并在段落级标记“新段落”修订
+    （w:pPr/w:rPr/w:ins —— 真实 Word 用户在 Word 内新增段落时产生的标记）。"""
+    from lxml import etree
+    done = 0
+    for el in elements:
+        if el.tag == _w("p"):
+            _mark_para_ins(el, state)
+        if el.tag == _w("r"):
+            # 跳过已被包进 ins 的 run（其父链上已是 ins）
+            parent = el.getparent()
+            if parent is not None and parent.tag == _w("ins"):
+                continue
+            state["seq"] += 1
+            ins = _tc_marker("ins", {"id": state["seq"], "author": state["author"], "date": state["date"]})
+            el.addprevious(ins)
+            ins.append(el)
+            done += 1
+        else:
+            for ch in el.iter(_w("r")):
+                parent = ch.getparent()
+                if parent is not None and parent.tag == _w("ins"):
+                    continue
+                state["seq"] += 1
+                ins = _tc_marker("ins", {"id": state["seq"], "author": state["author"], "date": state["date"]})
+                ch.addprevious(ins)
+                ins.append(ch)
+                done += 1
+    return done
+
+
+def _mark_para_ins(p_el, state):
+    """新段落的段落标记修订：w:pPr/w:rPr/w:ins（真实 Word 追加段落的标准标记）。"""
+    from lxml import etree
+    pPr = p_el.find(_w("pPr"))
+    if pPr is None:
+        pPr = etree.Element(_w("pPr"))
+        p_el.insert(0, pPr)
+    rPr = pPr.find(_w("rPr"))
+    if rPr is None:
+        rPr = etree.Element(_w("rPr"))
+        pPr.append(rPr)
+    state["seq"] += 1
+    ins_mark = _tc_marker("ins", {"id": state["seq"], "author": state["author"], "date": state["date"]})
+    rPr.append(ins_mark)
+
+
+# ---------- 批注（Word comments part）----------
+def _find_anchor(body, anchor):
+    """在 body 中定位锚文本。
+    返回 ("para", p_el, node_map, i, j)：普通段落净文本中的精确锚点；
+    返回 ("ins", ins_el, None, 0, 0)：修订插入（w:ins）中的锚点（批注标记包住整个插入单元）。"""
+    # 1) 普通直接 run 文本
+    for p_el in body.iter(_w("p")):
+        node_map = []
+        acc = 0
+        for r in [ch for ch in p_el if ch.tag == _w("r")]:
+            for t in r.findall(_w("t")):
+                txt = t.text or ""
+                node_map.append((t, r, acc, acc + len(txt)))
+                acc += len(txt)
+        full = "".join(t.text or "" for t, _, _, _ in node_map)
+        i = full.find(anchor)
+        if i >= 0:
+            return ("para", p_el, node_map, i, i + len(anchor))
+    # 2) 修订插入（w:ins）内的文本：批注范围包住整个插入单元
+    for ins_el in body.iter(_w("ins")):
+        txt = "".join(t.text or "" for t in ins_el.iter(_w("t")))
+        if anchor in txt:
+            return ("ins", ins_el, None, 0, 0)
+    return None
+
+
+def add_docx_comments(in_path, comments, out_path, author="docflow"):
+    """在 docx 中注入 Word 批注（comments.xml + commentRangeStart/End/Reference）。
+    返回实际注入的批注数；anchor 找不到的批注跳过。"""
+    import zipfile
+    import copy
+    from lxml import etree
+
+    comments = [c for c in (comments or []) if c.get("find") and c.get("comment") and str(c.get("comment")).strip()]
+    if not comments:
+        if os.path.realpath(in_path) != os.path.realpath(out_path) and os.path.exists(in_path):
+            import shutil
+            shutil.copyfile(in_path, out_path)
+        return 0
+    with zipfile.ZipFile(in_path) as zi:
+        names = zi.namelist()
+        doc_xml = zi.read("word/document.xml")
+        ct_xml = zi.read("[Content_Types].xml")
+        rels_xml = zi.read("word/_rels/document.xml.rels") if "word/_rels/document.xml.rels" in names else None
+        rest = {n: zi.read(n) for n in names if n not in ("word/document.xml", "[Content_Types].xml", "word/_rels/document.xml.rels")}
+
+    root = etree.fromstring(doc_xml)
+    body = root.find(_w("body"))
+    has_comments_part = "word/comments.xml" in names
+
+    # 已有批注 id 起点
+    next_id = 0
+    existing_comments_el = None
+    if has_comments_part:
+        try:
+            old = etree.fromstring(rest.pop("word/comments.xml"))
+            for c in old.findall(_w("comment")):
+                try:
+                    next_id = max(next_id, int(c.get(_w("id")) or 0) + 1)
+                except Exception:
+                    pass
+            existing_comments_el = old
+        except Exception:
+            has_comments_part = False
+    if existing_comments_el is None:
+        existing_comments_el = etree.Element(_w("comments"))
+
+    added = 0
+    author = str(author or "docflow")
+    date = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+    for c in comments:
+        find = str(c.get("find") or "").strip()
+        text = str(c.get("comment") or "").strip()
+        if not find or not text:
+            continue
+        hit = _find_anchor(body, find)
+        if hit is None:
+            continue
+        cid = next_id
+        next_id += 1
+        # 批注引用 run：带 CommentReference 样式（Word 批注锚点图标的标准呈现）
+        ref_run = etree.Element(_w("r"))
+        ref_rpr = etree.SubElement(ref_run, _w("rPr"))
+        ref_style = etree.SubElement(ref_rpr, _w("rStyle"))
+        ref_style.set(_w("val"), "CommentReference")
+        ref_run.append(_tc_marker("commentReference", {"id": cid}))
+        start_marker = _tc_marker("commentRangeStart", {"id": cid})
+        end_marker = _tc_marker("commentRangeEnd", {"id": cid})
+
+        # 情形 A：锚点在修订插入（w:ins）文本内 → 批注范围包住整个插入单元
+        if hit[0] == "ins":
+            ins_el = hit[1]
+            parent = ins_el.getparent()
+            if parent is not None:
+                children = list(parent)
+                ci = children.index(ins_el)
+                new_children = children[:ci] + [start_marker, ins_el, end_marker, ref_run] + children[ci + 1:]
+                for ch in list(parent):
+                    parent.remove(ch)
+                for ch in new_children:
+                    parent.append(ch)
+            # 批注内容（作者缩写 initials，与 Word 批注栏呈现一致）
+            c_el = _tc_marker("comment", {"id": cid, "author": author, "date": date})
+            c_el.set(_w("initials"), (author or "d")[:2])
+            para = etree.SubElement(c_el, _w("p"))
+            r_el = etree.SubElement(para, _w("r"))
+            t_el = etree.SubElement(r_el, _w("t"))
+            t_el.text = text
+            existing_comments_el.append(c_el)
+            added += 1
+            continue
+
+        p_el, node_map, i, j = hit[1], hit[2], hit[3], hit[4]
+        # 定位起止 run
+        def locate(pos):
+            for k in range(len(node_map)):
+                t, r, s, e = node_map[k]
+                if s <= pos < e:
+                    return k, pos - s
+            for k in range(len(node_map) - 1, -1, -1):
+                t, r, s, e = node_map[k]
+                if s <= pos <= e:
+                    return k, pos - s
+            return None, None
+        k1, o1 = locate(i)
+        k2, o2 = locate(j)
+        if k1 is None:
+            continue
+        t1, r1, _, _ = node_map[k1]
+        t2, r2, _, _ = node_map[k2] if k2 is not None else (None, None, None, None)
+        children = list(p_el)
+        ci1 = children.index(r1)
+        ci2 = children.index(r2) if r2 is not None else ci1
+        pieces = []
+        if k1 == k2:
+            pre = (t1.text or "")[:o1]
+            mid = (t1.text or "")[o1:o2]
+            suf = (t1.text or "")[o2:]
+            if pre:
+                pieces.append(_clone_run_with_text(r1, pre))
+            pieces.append(start_marker)
+            if mid:
+                pieces.append(_clone_run_with_text(r1, mid))
+            pieces.append(end_marker)
+            pieces.append(ref_run)
+            if suf:
+                pieces.append(_clone_run_with_text(r1, suf))
+        else:
+            pre = (t1.text or "")[:o1]
+            suf2 = (t2.text or "")[o2:]
+            if pre:
+                pieces.append(_clone_run_with_text(r1, pre))
+            pieces.append(start_marker)
+            # 锚点起点 run 的剩余文本（属批注范围，必须保留）
+            rem1 = (t1.text or "")[o1:]
+            if rem1:
+                pieces.append(_clone_run_with_text(r1, rem1))
+            # 中间 run 保留原文（批注是高亮不是删除）
+            for k in range(k1 + 1, k2 + 1):
+                tmm, rmm, _, _ = node_map[k]
+                # 保留完整中间 run；末节点取前缀
+                if k == k2:
+                    if o2:
+                        pieces.append(_clone_run_with_text(rmm, (tmm.text or "")[:o2]))
+                else:
+                    pieces.append(copy.deepcopy(rmm))
+            pieces.append(end_marker)
+            pieces.append(ref_run)
+            if suf2:
+                pieces.append(_clone_run_with_text(r2, suf2))
+        new_children = children[:ci1] + pieces + children[ci2 + 1:]
+        for ch in list(p_el):
+            p_el.remove(ch)
+        for ch in new_children:
+            p_el.append(ch)
+        # 批注内容（作者缩写 initials，与 Word 批注栏呈现一致）
+        c_el = _tc_marker("comment", {"id": cid, "author": author, "date": date})
+        c_el.set(_w("initials"), (author or "d")[:2])
+        para = etree.SubElement(c_el, _w("p"))
+        r_el = etree.SubElement(para, _w("r"))
+        t_el = etree.SubElement(r_el, _w("t"))
+        t_el.text = text
+        existing_comments_el.append(c_el)
+        added += 1
+
+    with zipfile.ZipFile(in_path) as zi:
+        entries = {n: zi.read(n) for n in zi.namelist()}
+    entries["word/document.xml"] = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+    if added:
+        # 已有批注 + 新增批注合并后统一写回（否则会覆盖为新批注丢失）
+        entries["word/comments.xml"] = etree.tostring(existing_comments_el, xml_declaration=True, encoding="UTF-8", standalone=True)
+    # Content types：加 comments override
+    if not has_comments_part and added:
+        marker = b"/word/comments.xml"
+        if marker not in ct_xml:
+            ct_xml = ct_xml.replace(b"</Types>", b'<Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/></Types>')
+        entries["[Content_Types].xml"] = ct_xml
+    # rels：加 comments relationship
+    if added:
+        rels_xml = rels_xml or b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>'
+        if b"comments.xml" not in rels_xml:
+            rels_xml = rels_xml.replace(b"</Relationships>", b'<Relationship Id="dshCommentsRel" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/></Relationships>')
+        entries["word/_rels/document.xml.rels"] = rels_xml
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zo:
+        for n, data in entries.items():
+            zo.writestr(n, data)
+    return added
+
+
+# ---------- 在线预览：docx/doc → HTML；pdf → 页图；其他 → 文本 HTML ----------
+def _text_to_html(text):
+    import html as _html
+    out = []
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if not s:
+            out.append("")
+            continue
+        if s.startswith("#"):
+            lvl = len(s) - len(s.lstrip("#"))
+            out.append("<h%d>%s</h%d>" % (min(lvl, 6), _html.escape(s.lstrip("#").strip()), min(lvl, 6)))
+        elif s.startswith(("- ", "* ")):
+            out.append("<ul><li>%s</li></ul>" % _html.escape(s[2:]))
+        else:
+            out.append("<p>%s</p>" % _html.escape(s))
+    return "\n".join(out)
+
+
+def cmd_preview(path):
+    import shutil
+    fmt = ext_of(path)
+    if fmt in ("docx", "doc"):
+        conv = soffice_convert(path, "html")
+        with io.open(conv, "r", encoding="utf-8", errors="replace") as f:
+            h = f.read()
+        # 去掉脚本与头部 meta，保留 body 内容（客户端注入编辑区）
+        h = re.sub(r"<script[\s\S]*?</script>", "", h, flags=re.I)
+        m = re.search(r"<body[^>]*>([\s\S]*)</body>", h, re.I)
+        body_html = m.group(1) if m else h
+        ok({"kind": "html", "format": fmt, "html": body_html})
+        return
+    if fmt == "pdf":
+        import subprocess
+        import base64
+        if not os.path.exists("/usr/bin/pdftoppm"):
+            err("预览失败：系统缺少 pdftoppm")
+        tmp = os.path.join(_conv_tmp(), "pdfpage_%s" % str(os.getpid()))
+        os.makedirs(tmp, exist_ok=True)
+        proc = subprocess.run(["/usr/bin/pdftoppm", "-png", "-r", "90", path, os.path.join(tmp, "p")],
+                              capture_output=True, timeout=300)
+        if proc.returncode != 0:
+            err("PDF 预览失败: %s" % proc.stderr.decode("utf-8", errors="replace")[:300])
+        pages = []
+        for n in sorted(os.listdir(tmp)):
+            if n.endswith(".png"):
+                fp = os.path.join(tmp, n)
+                with open(fp, "rb") as f:
+                    pages.append("data:image/png;base64," + base64.b64encode(f.read()).decode("ascii"))
+        ok({"kind": "pdf", "format": "pdf", "pages": pages[:40]})
+        return
+    if fmt == "xlsx":
+        x = extract_xlsx(path)
+        ok({"kind": "html", "format": "xlsx", "html": "<pre>" + _text_to_html(x.get("text", ""))
+            .replace("<", "&lt;").replace(">", "&gt;", 0) + "</pre>"})
+        return
+    if fmt in ("png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"):
+        import base64
+        with open(path, "rb") as f:
+            data = base64.b64encode(f.read()).decode("ascii")
+        mime = "image/svg+xml" if fmt == "svg" else "image/" + ("jpeg" if fmt in ("jpg", "jpeg") else fmt)
+        ok({"kind": "image", "format": fmt, "html": '<img src="data:%s;base64,%s" style="max-width:100%%"/>' % (mime, data)})
+        return
+    info = extract_any(path)
+    ok({"kind": "text", "format": info.get("format", fmt), "html": _text_to_html(info.get("text", ""))})
+
+
+def cmd_save_edited(file_path, html_path, out_path, comments_path=None):
+    """浏览器编辑器保存：HTML → soffice 转 docx → 可选注入批注 → 输出新 docx。"""
+    import shutil
+    if not os.path.exists(html_path):
+        err("编辑内容文件不存在")
+    tmp = _conv_tmp()
+    work = os.path.join(tmp, "saved_%s" % str(os.getpid()))
+    os.makedirs(work, exist_ok=True)
+    src_html = os.path.join(work, "edited.html")
+    shutil.copyfile(html_path, src_html)
+    conv = soffice_convert(src_html, "docx", filter="docx:MS Word 2007 XML")
+    added = 0
+    comments = []
+    if comments_path and os.path.exists(comments_path):
+        try:
+            with io.open(comments_path, "r", encoding="utf-8") as f:
+                comments = json.loads(f.read() or "[]") or []
+        except Exception:
+            comments = []
+    if comments:
+        added = add_docx_comments(conv, comments, out_path)
+        try:
+            os.remove(conv)
+        except Exception:
+            pass
+    else:
+        shutil.copyfile(conv, out_path)
+    ok({"size": os.path.getsize(out_path), "comments": added})
+
+
+# ===========================================================================
+# 期刊审阅：按权威杂志稿约要求检查文稿
+# ===========================================================================
+def _journal_dir():
+    return os.path.join(os.path.dirname(ROOT), "refs", "journals")
+
+
+def list_journals():
+    out = []
+    try:
+        for name in sorted(os.listdir(_journal_dir())):
+            if not name.endswith(".json"):
+                continue
+            try:
+                with io.open(os.path.join(_journal_dir(), name), "r", encoding="utf-8") as f:
+                    j = json.loads(f.read() or "{}")
+                if j.get("id"):
+                    out.append({"id": j["id"], "name": j.get("name", ""), "source": j.get("source", ""), "note": j.get("note", "")})
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return out
+
+
+def load_journal(jid):
+    jid = re.sub(r"[^A-Za-z0-9_\-]", "", str(jid or "")) or "generic"
+    p = os.path.join(_journal_dir(), jid + ".json")
+    if not os.path.exists(p):
+        err("未收录该期刊稿约规则: %s（可用: %s）" % (jid, ", ".join(j["id"] for j in list_journals())))
+    with io.open(p, "r", encoding="utf-8") as f:
+        return json.loads(f.read() or "{}")
+
+
+def _chars(text):
+    return len(re.sub(r"\s", "", text or ""))
+
+
+def _section(text, start_re, end_re):
+    m = re.search(start_re, text or "")
+    if not m:
+        return ""
+    rest = text[m.end():]
+    m2 = re.search(end_re, rest)
+    return rest[:m2.start()] if m2 else rest
+
+
+def _ref_entries(text):
+    """提取参考文献条目：行首 [n] 或 (n) 起始的行。"""
+    out = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        m = re.match(r"^[\[（(]\s*(\d{1,3})\s*[\]）)]\s*(.*?)$", line)
+        if m:
+            raw = m.group(2).strip()
+            if raw:
+                out.append({"n": int(m.group(1)), "raw": raw})
+    return out
+
+
+def _ref_title(raw):
+    tm = re.search(r"\.\s*([^.\n]{6,200}?)\s*\.?\s*\[[A-Za-z]{1,4}\]", raw)
+    if tm:
+        return tm.group(1).strip()
+    tm2 = re.search(r"\.\s*([^.\n]{6,200}?)\s*$", raw)
+    return (tm2.group(1).strip() if tm2 else "")[:200]
+
+
+def cmd_review(path, jid):
+    if not os.path.exists(path):
+        err("文件不存在: %s" % path)
+    spec = load_journal(jid)
+    rules = spec.get("rules") or {}
+    info = extract_any(path)
+    if not isinstance(info, dict) or not info.get("text"):
+        err("无法从文件中取得文本（可能为图片型文档）")
+    text = info.get("text") or ""
+    total_chars = _chars(text)
+
+    # ── 分区：摘要 / 正文 / 参考文献 ──
+    refs_sec = _section(text, r"(参\s*考\s*文\s*献)", r"(收稿日期|利益冲突|基金支持|本文编辑|撤稿|作者简介|通讯作者|通信作者)")
+    body_full = text
+    body = text
+    if refs_sec:
+        body = text[:text.rfind("参考文献")] if "参考文献" in text else text
+    abstract = _section(body, r"(摘\s*要)", r"(关\s*键\s*词|Abstract|中图分类号|正文)")
+    abstract = abstract.strip()
+    abstract_chars = _chars(abstract)
+
+    title_raw = ""
+    for line in (body or "").splitlines()[:6]:
+        s = re.sub(r"^#+\s*", "", line).strip()
+        if s and not re.match(r"^(摘\s*要|ABSTRACT|AUTHOR|通信|作者|基金|DOI)", s):
+            title_raw = s
+            break
+    title_chars = len(re.sub(r"\s", "", title_raw))
+
+    # ── 参考文献统计（兼容“行首 [n]”与“Word 自动编号/无编号”两种列表形态）──
+    entries = _ref_entries(refs_sec or "")
+    auto_numbered = False
+    # 降级判定：只有个别条目带 [n]（如首条 [1]），其余为自动编号 → 按条目行统计
+    line_entries = []
+    for line in (refs_sec or "").splitlines():
+        s = (line or "").strip()
+        if not s or len(s) < 12 or re.match(r"^注[:：]", s) or re.match(r"^(收稿|利益|通信|作者简介|本文编辑|基金)", s):
+            continue
+        line_entries.append({"n": 0, "raw": s})
+    if len(entries) < 5 and len(line_entries) >= 5 and len(line_entries) > len(entries) + 3:
+        entries = line_entries
+        auto_numbered = True
+    years = []
+    missing_title = 0
+    candidates = []
+    for e in entries:
+        y = re.findall(r"(?:19|20)\d{2}", e["raw"])
+        if y:
+            years.append(int(y[-1]))
+        t = _ref_title(e["raw"])
+        if t:
+            candidates.append({"title": t})
+        else:
+            missing_title += 1
+    current = datetime.date.today().year
+    recent5 = [y for y in years if 0 <= current - y <= 5]
+    recent5_ratio = (len(recent5) / len(entries)) if entries else 0.0
+
+    # ── 正文引文顺序（支持 [3-5]、[9,10]、[11–12] 区间/逗号表示）──
+    body_cites = []
+    for m in re.finditer(r"\[(\d{1,3}(?:\s*[,，\-–~]\s*\d{1,3})*)\]", body):
+        seg = m.group(1)
+        for part in re.split(r"[,，]", seg):
+            part = part.strip()
+            rm = re.match(r"(\d{1,3})\s*[-–~]\s*(\d{1,3})$", part)
+            if rm:
+                a, b = int(rm.group(1)), int(rm.group(2))
+                if a > b:
+                    a, b = b, a
+                for v in range(min(a, b), max(a, b) + 1):
+                    body_cites.append(v)
+            elif part.isdigit():
+                body_cites.append(int(part))
+    order_seen = []
+    for v in body_cites:
+        if v not in order_seen:
+            order_seen.append(v)
+    cite_ordered = (order_seen == sorted(order_seen)) and (order_seen == sorted(set(order_seen)))
+    cite_ok = bool(order_seen) and cite_ordered and (not entries or max(order_seen) <= len(entries) + 2)
+    if order_seen:
+        cite_first = order_seen[0]
+        cite_ok = cite_ok and cite_first == 1
+
+    checks = []
+
+    def add(cid, label, level, detail):
+        checks.append({"id": cid, "label": label, "level": level, "detail": detail})
+
+    # 1) 题目
+    tmax = rules.get("titleMaxChars", 24)
+    add("title", "文题字数（≤%d 字）" % tmax,
+        "pass" if (not title_raw or title_chars <= tmax) else "fail",
+        "文题「%s」共 %d 字" % (title_raw or "（未识别）", title_chars) + ("" if title_chars <= tmax else "，超出该刊常用上限"))
+
+    # 2) 摘要
+    amin, amax = rules.get("abstractMin", 250), rules.get("abstractMax", 600)
+    if not abstract:
+        add("abstract", "中文摘要", "fail", "未检测到「摘要」段落")
+    elif _chars(abstract) < amin:
+        add("abstract", "中文摘要字数（%d—%d 字）" % (amin, amax), "fail", "摘要约 %d 字，不足下限 %d 字" % (abstract_chars, amin))
+    elif _chars(abstract) > amax:
+        add("abstract", "中文摘要字数（%d—%d 字）" % (amin, amax), "warn", "摘要约 %d 字，超出建议上限 %d 字" % (abstract_chars, amax))
+    else:
+        add("abstract", "中文摘要字数（%d—%d 字）" % (amin, amax), "pass", "摘要约 %d 字" % abstract_chars)
+    if rules.get("abstractStructured"):
+        parts = [p for p in ["目的", "方法", "结果", "结论"] if p in abstract]
+        if abstract and len(parts) == 4:
+            add("abstract-structure", "结构式摘要（目的/方法/结果/结论）", "pass", "四项齐备")
+        else:
+            add("abstract-structure", "结构式摘要（目的/方法/结果/结论）", "fail" if abstract else "warn",
+                "缺少: " + "/".join(["目的", "方法", "结果", "结论"][i] for i, p in enumerate(["目的", "方法", "结果", "结论"]) if p not in abstract) or "无摘要")
+    if abstract and re.search(r"\[\d", abstract):
+        add("abstract-nocite", "摘要不得引用文献", "fail", "摘要中出现 [n] 引文编号")
+    elif abstract:
+        add("abstract-nocite", "摘要不得引用文献", "pass", "未发现引文编号")
+    if rules.get("englishAbstract"):
+        if re.search(r"(ABSTRACT|Abstract|Objective|Methods|Results|Conclusion)", text):
+            add("en-abstract", "英文摘要", "pass", "检测到英文摘要")
+        else:
+            add("en-abstract", "英文摘要", "fail", "未检测到英文摘要（Abstract / Objective / Methods / Results / Conclusion）")
+
+    # 3) 关键词
+    km = re.search(r"关\s*键\s*词[:：]?\s*([^\n]+)", body)
+    if km:
+        kws = [k.strip() for k in re.split(r"[;；,，\s]+", km.group(1)) if k.strip() and not re.match(r"^Abstract", k.strip())]
+        kmin, kmax = rules.get("keywordsMin", 3), rules.get("keywordsMax", 8)
+        if kmin <= len(kws) <= kmax:
+            add("keywords", "关键词数量（%d—%d 个）" % (kmin, kmax), "pass", "%d 个: %s" % (len(kws), "、".join(kws[:10])))
+        else:
+            add("keywords", "关键词数量（%d—%d 个）" % (kmin, kmax), "fail", "检测到 %d 个" % len(kws))
+    else:
+        add("keywords", "关键词数量（%d—%d 个）" % (rules.get("keywordsMin", 3), rules.get("keywordsMax", 8)), "fail", "未检测到「关键词」行")
+
+    # 4) 参考文献
+    rmin, rmax = rules.get("refsMin", 15), rules.get("refsMax", 60)
+    if not entries:
+        add("refs-count", "参考文献篇数（%d—%d 篇）" % (rmin, rmax), "fail", "未检测到参考文献条目（[n] 起始行）")
+    elif len(entries) < rmin:
+        add("refs-count", "参考文献篇数（%d—%d 篇）" % (rmin, rmax), "fail", "仅 %d 篇，不足下限 %d 篇" % (len(entries), rmin))
+    elif len(entries) > rmax:
+        add("refs-count", "参考文献篇数（%d—%d 篇）" % (rmin, rmax), "warn", "%d 篇，超出上限 %d 篇" % (len(entries), rmax))
+    else:
+        add("refs-count", "参考文献篇数（%d—%d 篇）" % (rmin, rmax), "pass", "%d 篇" % len(entries))
+    if auto_numbered:
+        # Word 自动编号列表：文本层无 [n]，条数按行降级统计但无法逐条对应正文编号
+        add("refs-numbering", "参考文献编号可核性", "warn",
+            "参考文献条目无 [n] 起首文本（疑为 Word 自动编号），条数按条目行降级统计为 %d 篇；无法逐条核对正文 [n] 与列表对应关系，请人工确认自动编号输出" % len(entries))
+    if years:
+        ratio = recent5_ratio
+        need = rules.get("recent5MinRatio", 0.3)
+        if ratio >= need:
+            add("refs-recent", "近 5 年文献占比（≥%.0f%%）" % (need * 100), "pass", "%.0f%%（%d/%d）" % (ratio * 100, len(recent5), len(years)))
+        else:
+            add("refs-recent", "近 5 年文献占比（≥%.0f%%）" % (need * 100), "warn", "仅 %.0f%%（%d/%d），建议补充近年文献" % (ratio * 100, len(recent5), len(years)))
+    if entries and missing_title:
+        add("refs-format", "参考文献 GB/T 7714 条目格式", "warn", "%d 条未识别出「题名 [J]」结构，请核对格式" % missing_title)
+    if not cite_ok and entries:
+        add("cite-order", "正文引文顺序编码（[1] 起、递增无跳跃）", "warn", "首次出现顺序 %s，请核对编号与顺序" % ", ".join(str(v) for v in order_seen[:20]) or "（未检测到）")
+
+    # 5) 图表
+    figs = re.findall(r"图\s*(\d{1,2})", body)
+    tbls = re.findall(r"表\s*(\d{1,2})", body)
+    fig_ok = all(len(line) > 8 for line in re.findall(r"[^\n]*图\s*\d{1,2}[^\n]*", body) if line.strip())
+    tbl_ok = all(len(line) > 8 for line in re.findall(r"[^\n]*表\s*\d{1,2}[^\n]*", body) if line.strip())
+    if figs:
+        add("figure-caption", "图注规范（图下方，含说明）", "pass" if fig_ok else "warn",
+            "%d 幅图" % len(set(figs)) + ("" if fig_ok else "，部分图注疑似缺说明文字"))
+    if tbls:
+        add("table-caption", "表题规范（表上方，三线表）", "pass" if tbl_ok else "warn",
+            "%d 个表" % len(set(tbls)) + ("" if tbl_ok else "，部分表题疑似缺说明文字"))
+
+    # 6) 伦理 / 基金 / 声明
+    ethics_pat = r"伦理|知情同意|临床试验注册|伦理委员会|ethics"
+    if rules.get("ethicsRequired"):
+        if re.search(ethics_pat, body):
+            add("ethics", "伦理审批与知情同意声明", "pass", "已检测到相关声明")
+        else:
+            add("ethics", "伦理审批与知情同意声明", "fail", "未检测到伦理委员会审批/知情同意/临床试验注册声明（涉及人体研究的必备项）")
+    if rules.get("fundRecommended"):
+        if re.search(r"基金|资助|Supported by|grant", body):
+            add("fund", "基金项目标注", "pass", "已检测到基金/资助信息")
+        else:
+            add("fund", "基金项目标注", "info", "未检测到基金项目（如无请忽略）")
+
+    # 7) 禁用项
+    bold = len(re.findall(r"\*\*", text))
+    if rules.get("noBoldMarkdown"):
+        add("no-bold", "禁用 Markdown 加粗（**）", "fail" if bold else "pass", "发现 %d 处" % bold if bold else "未发现")
+    ascii_lines = [l for l in text.splitlines() if l.strip() and set(l.strip()) <= set("|+-=>^<>:") and len(l.strip()) >= 4 and ("|" in l or "+" in l or "-" in l)]
+    if rules.get("noAsciiFigure"):
+        add("no-ascii-fig", "禁用 ASCII 字符画/纯文字流程图", "fail" if len(ascii_lines) >= 3 else ("warn" if ascii_lines else "pass"),
+            "检测到 %d 行疑似 ASCII 图" % len(ascii_lines) if ascii_lines else "未发现")
+
+    # 8) 缩写首现
+    abbrs = sorted(set(re.findall(r"\b[A-Z]{2,}\b", body)))
+    if rules.get("abbrevFullNameFirstUse") and abbrs:
+        add("abbrev", "缩略语首次出现写全称", "info", "检测到缩写 %s（共 %d 个），请核对是否已在首次出现处标注全称（如 全称（缩写））" % ("、".join(abbrs[:12]), len(abbrs)))
+
+    # 9) 全文篇幅
+    bmax = rules.get("bodyWordMax", 8000)
+    body_chars = _chars(body)
+    if body_chars > bmax:
+        add("body-length", "正文篇幅（≤%d 字）" % bmax, "warn", "正文约 %d 字，超出建议上限" % body_chars)
+    else:
+        add("body-length", "正文篇幅（≤%d 字）" % bmax, "pass", "正文约 %d 字" % body_chars)
+
+    # 汇总（审稿决策四档：直接接收/小修后接收/大修后接收/不接收）
+    levels = [c["level"] for c in checks]
+    # 文本级检查均可通过修改手稿完成（属可修缮），默认无 science 级 fail → minor/accept；
+    # host 侧可在发现“疑似不实文献”或用户指定 verdict 时升为大修/拒稿
+    scientific_fails = [c for c in checks if c.get("severity") == "scientific" and c["level"] == "fail"]
+    if scientific_fails:
+        verdict, verdict_zh = "major", "大修后接收（Major Revision）"
+    elif "fail" in levels or "warn" in levels:
+        verdict, verdict_zh = "minor", "小修后接收（Minor Revision）"
+    else:
+        verdict, verdict_zh = "accept", "直接接收（Accept）"
+    if len(scientific_fails) >= 3:
+        verdict, verdict_zh = "reject", "不接收（Reject）"
+    recs = []
+    for c in checks:
+        if c["level"] == "fail":
+            recs.append("【必改】" + c["label"] + "： " + c["detail"])
+        elif c["level"] == "warn":
+            recs.append("【建议】" + c["label"] + "： " + c["detail"])
+    ok({
+        "journal": {"id": spec.get("id"), "name": spec.get("name"), "source": spec.get("source"), "note": spec.get("note")},
+        "extract": {"chars": total_chars, "format": info.get("format")},
+        "title": title_raw,
+        "verdict": verdict,
+        "verdictZh": verdict_zh,
+        "checks": checks,
+        "refs": {
+            "count": len(entries),
+            "recent5": len(recent5),
+            "recent5Ratio": round(recent5_ratio, 2),
+            "candidates": candidates[:60],
+            "missingFormat": missing_title,
+            "autoNumbered": auto_numbered,
+            "verifyNote": "无 DOI/PMID 的中文文献（PubMed/Crossref 多不收录）核验不通过不代表文献不实，属“未验证”；仅有 DOI/PMID 却核验失败者才属“疑似不实”。",
+        },
+        "recommendations": recs,
+    })
 
 
 # ===========================================================================
@@ -1732,6 +2705,7 @@ def render_pptx(spec, out_path):
     accent = C(t["accent"])
     accent_dark = C(t["accent_dark"])
     light = C(t["light"])
+    soft = C(t["soft"])
     WHITE = RGBColor(0xFF, 0xFF, 0xFF)
     DARK_GRAY = RGBColor(0x33, 0x33, 0x33)
     MED_GRAY = RGBColor(0x66, 0x66, 0x66)
@@ -1864,6 +2838,7 @@ def render_pptx(spec, out_path):
     BODY_MAX = 5.55
     h2_num = 0
     part_num = 0
+    last_h2 = ""
 
     def open_slide(title_text, is_divider=False):
         nonlocal cur, cur_title, body_tf, est_h, part_num
@@ -1871,11 +2846,18 @@ def render_pptx(spec, out_path):
         cur_title = title_text
         est_h = 0.0
         if is_divider:
-            # 章节分隔页：左侧主题色竖条 + PART 标签 + 大标题
+            # 章节分隔页：左侧主题色竖条 + PART 标签 + 大标题 + 大号数字水印 + 底部色带
             part_num += 1
             add_rect(cur, 0, 0, 0.6, H, accent)
+            add_rect(cur, 0, H - 0.08, W, 0.08, accent)
+            tf = add_box(cur, 9.0, 1.7, 3.8, 3.0)
+            p = tf.paragraphs[0]
+            r = p.add_run()
+            r.text = "%02d" % part_num
+            style_run(r, 120, True, hx(light))
             add_text(cur, 1.25, 2.05, 10.0, 0.5, "PART %02d" % part_num, size=16, color=MED_GRAY)
-            add_text(cur, 1.25, 2.65, 10.8, 1.2, title_text, size=28, bold=True, color=accent_dark)
+            add_text(cur, 1.25, 2.65, 9.5, 1.2, title_text, size=28, bold=True, color=accent_dark)
+            add_hline(cur, 1.25, 3.95, 3.2, accent, 2.0)
             body_tf = None
         else:
             # 内容页：动作标题（底对齐）+ 细分隔线
@@ -1893,7 +2875,7 @@ def render_pptx(spec, out_path):
         nonlocal est_h
         # 只有确实放不下才续页（+0.02in 容差），避免短段落触发假性续页
         if est_h + need > BODY_MAX + 0.02:
-            open_slide(cur_title + "（续）")
+            open_slide(re.sub(r"（续）+$", "", cur_title) + "（续）")
 
     def para(text="", size=16, bold=False, color="333333", before=0, after=6, bullet=None,
              num=None, italic=False, font="微软雅黑"):
@@ -1924,12 +2906,18 @@ def render_pptx(spec, out_path):
         nonlocal est_h, h2_num
         ensure_body()
         n_lines = _wrap_lines(text, CW - 0.62, 18)
-        need = n_lines * 0.34 + 0.08
+        need = n_lines * 0.44 + 0.16
         ensure_space(need)
         h2_num += 1
         y = BODY_TOP + est_h
-        add_oval(cur, LM, y - 0.03, 0.42, str(h2_num), accent)
-        tf = add_box(cur, LM + 0.62, y - 0.07, CW - 0.62, n_lines * 0.34 + 0.1)
+        bar = cur.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(LM), Inches(y), Inches(CW), Inches(need - 0.06))
+        bar.fill.solid()
+        bar.fill.fore_color.rgb = light
+        bar.line.fill.background()
+        bar.shadow.inherit = False
+        clean(bar)
+        add_rect(cur, LM, y, 0.09, need - 0.06, accent)
+        tf = add_box(cur, LM + 0.32, y + 0.02, CW - 0.6, need - 0.1)
         p = tf.paragraphs[0]
         r = p.add_run()
         r.text = text
@@ -1987,30 +2975,42 @@ def render_pptx(spec, out_path):
         est_h += h + 0.1
 
     def add_table_slide(title_text, headers, rows):
+        nonlocal est_h, body_tf
+        est_h = 0.0
+        body_tf = None
         s2 = add_slide()
         add_text(s2, LM, 0.32, 11.7, 0.6, title_text, size=22, bold=True, color=accent_dark, anchor="b")
         add_hline(s2, LM, 1.06, CW, LINE_GRAY, 0.75)
         ncols = max(len(headers), max((len(rw) for rw in rows), default=0), 1)
         nrows = len(rows)
         colw = CW / ncols
-        hdr_y = 1.4
+        hdr_y, hdr_h = 1.35, 0.52
+        hdr = s2.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(LM), Inches(hdr_y), Inches(CW), Inches(hdr_h))
+        hdr.fill.solid()
+        hdr.fill.fore_color.rgb = accent
+        hdr.line.fill.background()
+        hdr.shadow.inherit = False
+        clean(hdr)
         for j in range(ncols):
-            add_text(s2, LM + colw * j, hdr_y, colw, 0.42, headers[j] if j < len(headers) else "",
-                     size=14, bold=True, color=accent_dark)
-        add_hline(s2, LM, hdr_y + 0.46, CW, accent, 1.25)
-        row_start = hdr_y + 0.6
-        avail = 7.0 - row_start
-        row_h = min(0.62, avail / nrows) if nrows else 0.62
-        row_font = 13 if row_h >= 0.5 else 11
+            add_text(s2, LM + colw * j + 0.08, hdr_y, colw - 0.16, hdr_h,
+                     headers[j] if j < len(headers) else "", size=15, bold=True, color=WHITE, anchor="ctr")
+        row_start = hdr_y + hdr_h + 0.14
+        avail = 6.85 - row_start
+        row_h = min(0.72, avail / nrows) if nrows else 0.72
+        row_font = 14 if row_h >= 0.55 else 12
         for i, rw in enumerate(rows):
             ry = row_start + row_h * i
+            if i % 2 == 1:
+                add_rect(s2, LM, ry, CW, row_h, soft)
             for j in range(ncols):
-                add_text(s2, LM + colw * j + 0.06, ry + 0.02, colw - 0.12, row_h - 0.04,
-                         str(rw[j]) if j < len(rw) else "", size=row_font,
-                         color=DARK_GRAY, anchor="ctr")
+                add_text(s2, LM + colw * j + 0.08, ry + 0.02, colw - 0.16, row_h - 0.04,
+                         str(rw[j]) if j < len(rw) else "", size=row_font, color=DARK_GRAY, anchor="ctr")
             add_hline(s2, LM, ry + row_h, CW, LINE_GRAY, 0.25)
 
     def add_image_slide(title_text, src, alt=""):
+        nonlocal est_h, body_tf
+        est_h = 0.0
+        body_tf = None
         s2 = add_slide()
         add_text(s2, LM, 0.32, 11.7, 0.6, title_text, size=22, bold=True, color=accent_dark, anchor="b")
         add_hline(s2, LM, 1.06, CW, LINE_GRAY, 0.75)
@@ -2020,19 +3020,19 @@ def render_pptx(spec, out_path):
                 from PIL import Image
                 im = Image.open(local)
                 iw, ih = im.size
-                max_w, max_h = 10.5, 5.2
+                max_w, max_h = 11.5, 5.5
                 ratio = min(max_w / iw, max_h / ih) if iw and ih else 1
                 w = max(1.0, iw * ratio)
                 h = max(1.0, ih * ratio)
                 left = LM + (CW - w) / 2
-                top = 1.4 + (5.4 - h) / 2
+                top = 1.3 + (5.6 - h) / 2
                 s2.shapes.add_picture(local, Inches(left), Inches(top), width=Inches(w), height=Inches(h))
             except Exception as e:
                 add_text(s2, LM, 3.0, CW, 0.8, "图片加载失败: %s" % e, size=14, color="C0392B")
         else:
             add_text(s2, LM, 3.0, CW, 0.8, "图片不可用: " + str(src), size=14, color="C0392B")
         if alt:
-            add_text(s2, LM, 6.75, CW, 0.4, alt, size=12, color=MED_GRAY, align=PP_ALIGN.CENTER)
+            add_text(s2, LM, 6.9, CW, 0.4, alt, size=13, color=MED_GRAY, align=PP_ALIGN.CENTER)
 
     sections = content_sections(spec)
     for s in sections:
@@ -2040,12 +3040,10 @@ def render_pptx(spec, out_path):
         if typ == "h1":
             open_slide(s.get("text", ""), is_divider=True)
         elif typ == "h2":
-            if body_tf is None:
-                open_slide(s.get("text", ""))
-            elif est_h > 2.2:
-                open_slide(s.get("text", ""))
-            else:
-                add_h2_row(s.get("text", ""))
+            nonlocal_last = s.get("text", "")
+            # 记录最近小节标题：附表/配图标题应归属所在小节，而非当前幻灯片
+            last_h2 = nonlocal_last
+            open_slide(s.get("text", ""))
         elif typ == "h3":
             add_h3(s.get("text", ""))
         elif typ == "p":
@@ -2054,16 +3052,21 @@ def render_pptx(spec, out_path):
             for it in s.get("items", []):
                 para(str(it), size=16, bullet=True, after=6)
         elif typ == "numbered":
-            for n, it in enumerate(s.get("items", []), 1):
+            st = int(s.get("start") or 1)
+            for n, it in enumerate(s.get("items", []), st):
                 para(str(it), size=16, num=n, after=6)
         elif typ == "quote":
             add_quote(s.get("text", ""))
         elif typ == "code":
             add_code(s.get("text", ""))
         elif typ == "table":
-            add_table_slide(cur_title + "（附表）" if cur_title else "数据表", s.get("headers") or [], s.get("rows") or [])
+            _tt = (last_h2 or re.sub(r"（续）+$", "", cur_title) or "")
+            add_table_slide((_tt + "（附表）") if _tt else "数据表",
+                            s.get("headers") or [], s.get("rows") or [])
         elif typ == "image":
-            add_image_slide((cur_title + "（配图）") if cur_title else (s.get("alt") or "配图"), s.get("src", ""), s.get("alt", ""))
+            _tt = (last_h2 or re.sub(r"（续）+$", "", cur_title) or "")
+            add_image_slide((_tt + "（配图）") if _tt else (s.get("alt") or "配图"),
+                            s.get("src", ""), s.get("alt", ""))
         elif typ == "divider":
             pass
 
@@ -2107,6 +3110,381 @@ def pptx_replace_text(shape, find, repl):
                                 r.text = ""
                         changed = True
     return changed
+
+
+def _render_appended_pptx(prs, t, op):
+    """edit_pptx 的 append 路径：复用 render_pptx 的经典布局（标题栏+小节色条+
+    卡片式要点+彩色表头表格+大图+页码+分组分页），替代早期每个元素独占一页的简化版。"""
+    from pptx.util import Inches, Pt
+    from pptx.dml.color import RGBColor
+    from pptx.enum.text import PP_ALIGN
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.oxml.ns import qn
+    from lxml import etree
+
+    def C(h):
+        return RGBColor.from_string(str(h).lstrip("#"))
+
+    accent = C(t["accent"])
+    accent_dark = C(t["accent_dark"])
+    light = C(t["light"])
+    soft = C(t["soft"])
+    WHITE = RGBColor(0xFF, 0xFF, 0xFF)
+    DARK_GRAY = RGBColor(0x33, 0x33, 0x33)
+    MED_GRAY = RGBColor(0x66, 0x66, 0x66)
+    LINE_GRAY = RGBColor(0xCC, 0xCC, 0xCC)
+
+    def hx(c):
+        return "%02X%02X%02X" % (c[0], c[1], c[2])
+
+    blank = prs.slide_layouts[6]
+    W, H = 13.333, 7.5
+    LM = 0.8
+    CW = 11.733
+    BODY_TOP = 1.62
+    BODY_MAX = 5.42
+
+    def style_run(r, size=18, bold=False, color="333333", font="微软雅黑", italic=False):
+        r.font.size = Pt(size)
+        r.font.bold = bold
+        r.font.italic = italic
+        r.font.color.rgb = RGBColor.from_string(str(color).lstrip("#"))
+        r.font.name = font
+        rPr = r._r.get_or_add_rPr()
+        ea = rPr.find(qn("a:ea"))
+        if ea is None:
+            ea = etree.SubElement(rPr, qn("a:ea"))
+        ea.set("typeface", font)
+
+    def clean(shape):
+        sp = shape._element
+        st = sp.find(qn("p:style"))
+        if st is not None:
+            sp.remove(st)
+
+    def add_rect(slide, l, tp, w, h, color):
+        sp = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(l), Inches(tp), Inches(w), Inches(h))
+        sp.fill.solid()
+        sp.fill.fore_color.rgb = color
+        sp.line.fill.background()
+        sp.shadow.inherit = False
+        clean(sp)
+        return sp
+
+    def add_hline(slide, x, y, length, color, thickness=0.5):
+        h = max(thickness * 12700, 6350)
+        return add_rect(slide, x, y, length, h / 914400.0, color)
+
+    def add_text(slide, l, tp, w, h, text, size=14, bold=False, color=DARK_GRAY,
+                 font="微软雅黑", align=PP_ALIGN.LEFT, anchor="t"):
+        tb = slide.shapes.add_textbox(Inches(l), Inches(tp), Inches(w), Inches(h))
+        tf = tb.text_frame
+        tf.word_wrap = True
+        bodyPr = tf._txBody.find(qn("a:bodyPr"))
+        bodyPr.set("anchor", anchor)
+        for a in ["lIns", "tIns", "rIns", "bIns"]:
+            bodyPr.set(a, "45720")
+        lines = text if isinstance(text, list) else [text]
+        for i, line in enumerate(lines):
+            p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+            p.alignment = align
+            if i > 0:
+                p.space_before = Pt(4)
+            r = p.add_run()
+            r.text = line
+            style_run(r, size, bold, hx(color), font)
+        return tb
+
+    def add_box(slide, l, tp, w, h):
+        tb = slide.shapes.add_textbox(Inches(l), Inches(tp), Inches(w), Inches(h))
+        tf = tb.text_frame
+        tf.word_wrap = True
+        return tf
+
+    sections = parse_md(op.get("content", ""))
+    start_idx = len(prs.slides)
+    cur = None
+    cur_title = ""
+    body_tf = None
+    est_h = 0.0
+    h2_num = 0
+    part_num = 0
+    last_h2 = ""
+
+    def add_slide():
+        nonlocal cur
+        cur = prs.slides.add_slide(blank)
+        return cur
+
+    def open_slide(title_text, is_divider=False):
+        nonlocal cur, cur_title, body_tf, est_h, part_num
+        cur = add_slide()
+        cur_title = title_text
+        est_h = 0.0
+        if is_divider:
+            part_num += 1
+            add_rect(cur, 0, 0, 0.6, H, accent)
+            add_rect(cur, 0, H - 0.08, W, 0.08, accent)
+            tf = add_box(cur, 9.0, 1.7, 3.8, 3.0)
+            p = tf.paragraphs[0]
+            r = p.add_run()
+            r.text = "%02d" % part_num
+            style_run(r, 120, True, hx(light))
+            add_text(cur, 1.25, 2.05, 10.0, 0.5, "PART %02d" % part_num, size=16, color=MED_GRAY)
+            add_text(cur, 1.25, 2.65, 9.5, 1.2, title_text, size=28, bold=True, color=accent_dark)
+            add_hline(cur, 1.25, 3.95, 3.2, accent, 2.0)
+            body_tf = None
+        else:
+            add_text(cur, LM, 0.32, 11.7, 0.6, title_text, size=22, bold=True, color=accent_dark, anchor="b")
+            add_hline(cur, LM, 1.06, CW, LINE_GRAY, 0.75)
+            body_tf = add_box(cur, LM, BODY_TOP, CW, BODY_MAX)
+        return cur
+
+    def ensure_body():
+        nonlocal cur
+        if body_tf is None:
+            open_slide(cur_title)
+
+    def _base_title():
+        return re.sub(r"（续）+$", "", cur_title)
+
+    def ensure_space(need):
+        nonlocal est_h
+        if est_h + need > BODY_MAX + 0.02:
+            open_slide(_base_title() + "（续）")
+
+    def para(text="", size=17, bold=False, color="333333", before=0, after=7, bullet=None,
+             num=None, italic=False):
+        nonlocal est_h
+        ensure_body()
+        n_lines = _wrap_lines(text, CW - (0.3 if bullet or num else 0), size)
+        need = max(n_lines * (size / 72.0) * 1.35, size / 72.0) + after / 72.0 + 0.02
+        ensure_space(need)
+        p = body_tf.paragraphs[0] if not body_tf.paragraphs[0].runs and est_h == 0 else body_tf.add_paragraph()
+        p.space_before = Pt(before)
+        p.space_after = Pt(after)
+        if bullet:
+            rb = p.add_run()
+            rb.text = "▪  "
+            style_run(rb, size, True, hx(accent))
+        if num is not None:
+            rn = p.add_run()
+            rn.text = "%d. " % num
+            style_run(rn, size, True, hx(accent))
+        if text:
+            rt = p.add_run()
+            rt.text = text
+            style_run(rt, size, bold, color, "微软雅黑", italic)
+        est_h += need
+
+    def add_h2_row(text):
+        nonlocal est_h, h2_num
+        ensure_body()
+        n_lines = _wrap_lines(text, CW - 0.62, 18)
+        need = n_lines * 0.44 + 0.16
+        ensure_space(need)
+        h2_num += 1
+        y = BODY_TOP + est_h
+        bar = cur.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(LM), Inches(y), Inches(CW), Inches(need - 0.06))
+        bar.fill.solid()
+        bar.fill.fore_color.rgb = light
+        bar.line.fill.background()
+        bar.shadow.inherit = False
+        clean(bar)
+        add_rect(cur, LM, y, 0.09, need - 0.06, accent)
+        tf = add_box(cur, LM + 0.32, y + 0.02, CW - 0.6, need - 0.1)
+        p = tf.paragraphs[0]
+        r = p.add_run()
+        r.text = text
+        style_run(r, 18, True, hx(accent_dark))
+        est_h += need
+
+    def add_h3(text):
+        nonlocal est_h
+        ensure_body()
+        n_lines = _wrap_lines(text, CW - 0.24, 16)
+        need = n_lines * 0.32 + 0.1
+        ensure_space(need)
+        y = BODY_TOP + est_h
+        add_rect(cur, LM, y + 0.06, 0.07, 0.26, accent)
+        tf = add_box(cur, LM + 0.24, y - 0.04, CW - 0.24, n_lines * 0.32 + 0.1)
+        p = tf.paragraphs[0]
+        r = p.add_run()
+        r.text = text
+        style_run(r, 16, True, "444444")
+        est_h += need
+
+    def add_quote(text):
+        nonlocal est_h
+        ensure_body()
+        n_lines = _wrap_lines(text, CW - 0.6, 15)
+        need = max(n_lines * 0.32 + 0.34, 1.0)
+        ensure_space(need)
+        y = BODY_TOP + est_h
+        add_rect(cur, LM, y, CW, need - 0.15, light)
+        add_rect(cur, LM, y, 0.07, need - 0.15, accent)
+        tf = add_box(cur, LM + 0.3, y + 0.12, CW - 0.6, need - 0.4)
+        p = tf.paragraphs[0]
+        r = p.add_run()
+        r.text = text
+        style_run(r, 15, False, "555555", italic=True)
+        est_h += need
+
+    def add_code(text):
+        nonlocal est_h
+        ensure_body()
+        lines = (text or "").split("\n")
+        h = min(0.28 * len(lines) + 0.2, 3.2)
+        ensure_space(h + 0.1)
+        y = BODY_TOP + est_h
+        add_rect(cur, LM, y, CW, h, RGBColor(0xF2, 0xF2, 0xF2))
+        tf = add_box(cur, LM + 0.25, y + 0.12, CW - 0.5, h - 0.2)
+        first = True
+        for ln in lines[:16]:
+            p = tf.paragraphs[0] if first else tf.add_paragraph()
+            first = False
+            p.space_after = Pt(2)
+            r = p.add_run()
+            r.text = ln if ln else " "
+            style_run(r, 12, False, "444444", "Consolas")
+        est_h += h + 0.1
+
+    def add_table_slide(title_text, headers, rows):
+        nonlocal est_h, body_tf
+        est_h = 0.0
+        body_tf = None
+        s2 = add_slide()
+        add_text(s2, LM, 0.32, 11.7, 0.6, title_text, size=22, bold=True, color=accent_dark, anchor="b")
+        add_hline(s2, LM, 1.06, CW, LINE_GRAY, 0.75)
+        ncols = max(len(headers), max((len(rw) for rw in rows), default=0), 1)
+        nrows = len(rows)
+        colw = CW / ncols
+        hdr_y, hdr_h = 1.35, 0.52
+        hdr = s2.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(LM), Inches(hdr_y), Inches(CW), Inches(hdr_h))
+        hdr.fill.solid()
+        hdr.fill.fore_color.rgb = accent
+        hdr.line.fill.background()
+        hdr.shadow.inherit = False
+        clean(hdr)
+        for j in range(ncols):
+            add_text(s2, LM + colw * j + 0.08, hdr_y, colw - 0.16, hdr_h,
+                     headers[j] if j < len(headers) else "", size=15, bold=True, color=WHITE, anchor="ctr")
+        row_start = hdr_y + hdr_h + 0.14
+        avail = 6.85 - row_start
+        row_h = min(0.72, avail / nrows) if nrows else 0.72
+        row_font = 14 if row_h >= 0.55 else 12
+        for i, rw in enumerate(rows):
+            ry = row_start + row_h * i
+            if i % 2 == 1:
+                add_rect(s2, LM, ry, CW, row_h, soft)
+            for j in range(ncols):
+                add_text(s2, LM + colw * j + 0.08, ry + 0.02, colw - 0.16, row_h - 0.04,
+                         str(rw[j]) if j < len(rw) else "", size=row_font, color=DARK_GRAY, anchor="ctr")
+            add_hline(s2, LM, ry + row_h, CW, LINE_GRAY, 0.25)
+
+    def add_image_slide(title_text, src, alt=""):
+        nonlocal est_h, body_tf
+        est_h = 0.0
+        body_tf = None
+        s2 = add_slide()
+        add_text(s2, LM, 0.32, 11.7, 0.6, title_text, size=22, bold=True, color=accent_dark, anchor="b")
+        add_hline(s2, LM, 1.06, CW, LINE_GRAY, 0.75)
+        local = resolve_image(src)
+        if local:
+            try:
+                from PIL import Image
+                im = Image.open(local)
+                iw, ih = im.size
+                max_w, max_h = 11.5, 5.5
+                ratio = min(max_w / iw, max_h / ih) if iw and ih else 1
+                w = max(1.0, iw * ratio)
+                h = max(1.0, ih * ratio)
+                left = LM + (CW - w) / 2
+                top = 1.3 + (5.6 - h) / 2
+                s2.shapes.add_picture(local, Inches(left), Inches(top), width=Inches(w), height=Inches(h))
+            except Exception as e:
+                add_text(s2, LM, 3.0, CW, 0.8, "图片加载失败: %s" % e, size=14, color="C0392B")
+        else:
+            add_text(s2, LM, 3.0, CW, 0.8, "图片不可用: " + str(src), size=14, color="C0392B")
+        if alt:
+            add_text(s2, LM, 6.9, CW, 0.4, alt, size=13, color=MED_GRAY, align=PP_ALIGN.CENTER)
+
+    def add_bullets(items):
+        nonlocal est_h
+        ensure_body()
+        items = [str(i) for i in items]
+        card_mode = len(items) <= 6 and all(len(i) <= 72 for i in items)
+        if card_mode:
+            h, gap = 0.6, 0.13
+            need = len(items) * h + (len(items) - 1) * gap + 0.08
+            ensure_space(need)
+            y = BODY_TOP + est_h
+            for k, it in enumerate(items):
+                cy = y + k * (h + gap)
+                card = cur.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(LM), Inches(cy), Inches(CW), Inches(h))
+                card.fill.solid()
+                card.fill.fore_color.rgb = soft
+                card.line.color.rgb = light
+                card.line.width = Pt(0.75)
+                card.shadow.inherit = False
+                try:
+                    card.adjustments[0] = 0.10
+                except Exception:
+                    pass
+                clean(card)
+                add_rect(cur, LM, cy, 0.08, h, accent)
+                tf = add_box(cur, LM + 0.3, cy + 0.03, CW - 0.5, h - 0.06)
+                bodyPr = tf._txBody.find(qn("a:bodyPr"))
+                bodyPr.set("anchor", "ctr")
+                p = tf.paragraphs[0]
+                r = p.add_run()
+                r.text = it
+                style_run(r, 17, False, "333333")
+            est_h += need
+        else:
+            for it in items:
+                para(it, size=17, bullet=True, after=8)
+
+    for s in sections:
+        typ = s.get("type")
+        if typ == "h1":
+            open_slide(s.get("text", ""), is_divider=True)
+        elif typ == "h2":
+            last_h2 = s.get("text", "")
+            if body_tf is None:
+                open_slide(s.get("text", ""))
+            elif est_h > 1.8:
+                open_slide(s.get("text", ""))
+            else:
+                add_h2_row(s.get("text", ""))
+        elif typ == "h3":
+            add_h3(s.get("text", ""))
+        elif typ == "p":
+            para(s.get("text", ""), size=17, before=2, after=8)
+        elif typ == "bullets":
+            add_bullets(s.get("items", []))
+        elif typ == "numbered":
+            for n, it in enumerate(s.get("items", []), 1):
+                para(str(it), size=17, num=n, after=8)
+        elif typ == "quote":
+            add_quote(s.get("text", ""))
+        elif typ == "code":
+            add_code(s.get("text", ""))
+        elif typ == "table":
+            _tt = (last_h2 or _base_title() or "")
+            add_table_slide((_tt + "（附表）") if _tt else "数据表",
+                            s.get("headers") or [], s.get("rows") or [])
+        elif typ == "image":
+            _tt = (last_h2 or _base_title() or "")
+            add_image_slide((_tt + "（配图）") if _tt else (s.get("alt") or "配图"),
+                            s.get("src", ""), s.get("alt", ""))
+        elif typ == "divider":
+            pass
+
+    total = len(prs.slides)
+    for idx in range(start_idx, total):
+        add_text(prs.slides[idx], 12.15, 7.08, 1.0, 0.3, "%d/%d" % (idx + 1, total),
+                 size=9, color=MED_GRAY, align=PP_ALIGN.RIGHT)
 
 
 def edit_pptx(spec, in_path, out_path):
@@ -2162,72 +3540,7 @@ def edit_pptx(spec, in_path, out_path):
                         r.text = title
                     break
         elif typ == "append":
-            # 追加为新幻灯片
-            blank = prs.slide_layouts[6]
-            for s in content_sections(op):
-                if s.get("type") in ("h1", "h2"):
-                    slide = prs.slides.add_slide(blank)
-                    tf = slide.shapes.add_textbox(Inches(0.7), Inches(0.42), Inches(11.9), Inches(0.85))
-                    tf.word_wrap = True
-                    p = tf.text_frame.paragraphs[0]
-                    r = p.add_run()
-                    r.text = s.get("text", "")
-                    style_run(r, 27, True, t["accent_dark"])
-                elif s.get("type") == "p":
-                    slide = prs.slides.add_slide(blank)
-                    tf = slide.shapes.add_textbox(Inches(0.75), Inches(0.6), Inches(11.85), Inches(6.0))
-                    tf.word_wrap = True
-                    p = tf.text_frame.paragraphs[0]
-                    r = p.add_run()
-                    r.text = s.get("text", "")
-                    style_run(r, 18, False, "333333")
-                elif s.get("type") == "bullets":
-                    slide = prs.slides.add_slide(blank)
-                    tf = slide.shapes.add_textbox(Inches(0.75), Inches(0.6), Inches(11.85), Inches(6.0))
-                    tf.word_wrap = True
-                    first = True
-                    for it in s.get("items", []):
-                        p = tf.text_frame.paragraphs[0] if first else tf.text_frame.add_paragraph()
-                        first = False
-                        rb = p.add_run()
-                        rb.text = "▪  "
-                        style_run(rb, 17, True, t["accent"])
-                        rt = p.add_run()
-                        rt.text = str(it)
-                        style_run(rt, 17, False, "333333")
-                elif s.get("type") == "image":
-                    slide = prs.slides.add_slide(blank)
-                    local = resolve_image(s.get("src", ""))
-                    if local:
-                        try:
-                            from PIL import Image
-                            im = Image.open(local)
-                            iw, ih = im.size
-                            max_w, max_h = 10.5, 5.4
-                            ratio = min(max_w / iw, max_h / ih) if iw and ih else 1
-                            w = max(1.0, iw * ratio)
-                            h = max(1.0, ih * ratio)
-                            left = (W - w) / 2
-                            top = 1.0 + (5.5 - h) / 2
-                            slide.shapes.add_picture(local, Inches(left), Inches(top), width=Inches(w), height=Inches(h))
-                        except Exception as e:
-                            tf = slide.shapes.add_textbox(Inches(0.75), Inches(2.8), Inches(11.85), Inches(0.8))
-                            p = tf.text_frame.paragraphs[0]
-                            r = p.add_run()
-                            r.text = "图片加载失败: %s" % e
-                            style_run(r, 18, False, "C0392B")
-                    else:
-                        tf = slide.shapes.add_textbox(Inches(0.75), Inches(2.8), Inches(11.85), Inches(0.8))
-                        p = tf.text_frame.paragraphs[0]
-                        r = p.add_run()
-                        r.text = "图片不可用: " + str(s.get("src", ""))
-                        style_run(r, 18, False, "C0392B")
-                    if s.get("alt"):
-                        tf = slide.shapes.add_textbox(Inches(0.75), Inches(6.3), Inches(11.85), Inches(0.5))
-                        p = tf.text_frame.paragraphs[0]
-                        r = p.add_run()
-                        r.text = str(s.get("alt", ""))
-                        style_run(r, 16, False, "666666")
+            _render_appended_pptx(prs, t, op)
         elif typ == "restyle":
             accent = (op.get("accent") or "").strip()
             if not re.fullmatch(r"#[0-9A-Fa-f]{6}", accent):
@@ -3249,7 +4562,22 @@ def cmd_create(fmt, out_path, spec_path=None):
     if fmt in ("ppt",):
         err("不支持旧版二进制 .ppt 格式，请先在 Office 中另存为 .pptx")
     if fmt == "docx":
-        render_docx(spec, out_path)
+        if spec.get("plain"):
+            render_docx_plain(spec, out_path)
+        else:
+            render_docx(spec, out_path)
+    elif fmt == "doc":
+        import shutil
+        tmp_docx = os.path.join(_conv_tmp(), "gen_%s.docx" % str(os.getpid()))
+        try:
+            render_docx(spec, tmp_docx)
+            conv = soffice_convert(tmp_docx, "doc")
+            shutil.copyfile(conv, out_path)
+        finally:
+            try:
+                os.remove(tmp_docx)
+            except Exception:
+                pass
     elif fmt == "pptx":
         if spec.get("visual") or spec.get("style") == "visual":
             render_pptx_visual(spec, out_path)
@@ -3302,6 +4630,24 @@ def cmd_edit(fmt, in_path, out_path, spec_path=None):
         err("源文件不存在: %s" % in_path)
     if fmt == "docx":
         edit_docx(spec, in_path, out_path)
+    elif fmt == "doc":
+        # 旧版 .doc：先转 docx 编辑；默认再转回 doc 输出；
+        # 若 spec.outFormat 指定 docx（例如修订/批注模式），直接输出 docx 中间产物
+        # （.doc 转回会丢失修订与批注，修订/批注请用 docx 副本）。
+        import shutil
+        tmp_docx = os.path.join(_conv_tmp(), "edit_%s.docx" % str(os.getpid()))
+        try:
+            edit_docx(spec, soffice_convert(in_path, "docx"), tmp_docx)
+            if str(spec.get("outFormat") or "").lower() == "docx":
+                shutil.copyfile(tmp_docx, out_path)
+            else:
+                conv = soffice_convert(tmp_docx, "doc")
+                shutil.copyfile(conv, out_path)
+        finally:
+            try:
+                os.remove(tmp_docx)
+            except Exception:
+                pass
     elif fmt == "pptx":
         edit_pptx(spec, in_path, out_path)
     elif fmt == "pdf":
@@ -3350,6 +4696,16 @@ def main():
             if len(sys.argv) != 3:
                 err("meta 需要 <file>")
             cmd_meta(_fence(sys.argv[2]))
+        elif cmd == "review":
+            if len(sys.argv) != 4:
+                err("review 需要 <file> <期刊id>")
+            cmd_review(_fence(sys.argv[2]), sys.argv[3])
+        elif cmd == "preview":
+            if len(sys.argv) != 3:
+                err("preview 需要 <file>")
+            cmd_preview(_fence(sys.argv[2]))
+        elif cmd == "journals":
+            ok({"items": list_journals()})
         elif cmd == "create":
             if len(sys.argv) not in (4, 5):
                 err("create 需要 <fmt> <out_path> [spec_path]")

@@ -330,6 +330,11 @@ def _build_result(
             "patient_api_time": round(patient_agent.total_time, 1),
         },
         "completed": med_agent.completed,
+        # ── 模型版本标注（测试结果要求：结果标注模型版本号）──
+        "model": {
+            "medical": med_agent.model,
+            "patient": patient_agent.model,
+        },
     }
 
 
@@ -345,6 +350,8 @@ def save_result(result: dict, hadm_id: str):
         "conversation_log": result["conversation_log"],
         "statistics": result["statistics"],
         "completed": result["completed"],
+        # ── 模型版本标注（测试结果要求：结果标注模型版本号）──
+        "model": result.get("model", {}),
     }
     # 只保存最后几条消息历史（避免文件过大）
     clean_result["med_messages_summary"] = [

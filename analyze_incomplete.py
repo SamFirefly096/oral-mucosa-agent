@@ -131,6 +131,8 @@ def analyze_incomplete_conversation(filepath: Path) -> dict:
         "abandonment_phrases": found_abandonment,
         "root_cause": root_cause,
         "detail": detail,
+        # ── 模型版本标注（测试结果要求：结果标注模型版本号）──
+        "model": data.get("model", {}),
     }
 
 
@@ -175,6 +177,12 @@ def run_analysis(conversations_dir: Path = None) -> dict:
     cause_groups = defaultdict(list)
     for r in incomplete:
         cause_groups[r["root_cause"]].append(r)
+
+    # 模型版本标注（要求：结果/对话均标注模型版本号）
+    model_line = "；".join(
+        f"{r.get('model', {}).get('medical', '?')}/{r.get('model', {}).get('patient', '?')}"
+        for r in all_results if r.get("model")
+    ) or "无"
 
     # 生成报告
     report_lines = [

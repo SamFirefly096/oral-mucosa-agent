@@ -87,6 +87,8 @@ def run_one(hadm_id, med_type, pat_type):
             "statistics": result.get("statistics", {}),
             "completed": result.get("completed", False),
             "version": result.get("version", "v0.1.3"),
+            # ── 模型版本标注（测试结果要求：结果标注模型版本号）──
+            "model": result.get("model", {}),
         }
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(output, f, ensure_ascii=False, indent=2)
@@ -100,6 +102,8 @@ def run_one(hadm_id, med_type, pat_type):
             "tools": result.get("statistics", {}).get("tool_calls", 0),
             "time": round(elapsed, 0),
             "version": result.get("version", ""),
+            # ── 模型版本标注（测试结果要求：结果标注模型版本号）──
+            "model": result.get("model", {}),
             "save_path": str(filepath),
         }
     except Exception as e:

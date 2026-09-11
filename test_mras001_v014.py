@@ -74,7 +74,6 @@ def run_test(hadm_id: str, combinations=None):
                 patient_context=patient_ctx, primary_complaint=complaint,
                 max_turns=30, verbose=True)
             result["label"] = label
-            result["model"] = MEDICAL_MODEL
             result["timestamp"] = datetime.now().isoformat()
             filepath = save_result(result, hadm_id, label)
             results.append({
@@ -83,6 +82,8 @@ def run_test(hadm_id: str, combinations=None):
                 "tool_calls": result["statistics"]["tool_calls"],
                 "time_seconds": result["statistics"]["total_time_seconds"],
                 "file": str(filepath), "error": None,
+                # ── 模型版本标注（测试结果要求：结果标注模型版本号）──
+                "model": result.get("model"),
             })
             print(f"  [{label}] 完成: completed={result['completed']}, turns={result['statistics']['total_turns']}, tools={result['statistics']['tool_calls']}, time={result['statistics']['total_time_seconds']}s")
         except Exception as e:

@@ -4,8 +4,8 @@ Chief×Realistic 24例测试 — deepseek-v4-pro 更新正式版 (2026-08)
 模型切换：import config 前设置环境变量（load_dotenv override=False 不覆盖已有环境变量）
 """
 import os
-os.environ["MIRA_MEDICAL_MODEL"] = "deepseek-v4-pro"
-os.environ["MIRA_PATIENT_MODEL"] = "deepseek-v4-pro"
+os.environ["MIRA_MEDICAL_MODEL"] = "deepseek-v4-flash-vision-exp"
+os.environ["MIRA_PATIENT_MODEL"] = "deepseek-v4-flash-vision-exp"
 
 import sys, json, time, threading
 from datetime import datetime
@@ -78,7 +78,6 @@ def run_one(hadm_id: str, patient_ctx, complaint):
             patient_context=patient_ctx, primary_complaint=complaint,
             max_turns=30, verbose=False)
         result["label"] = label
-        result["model"] = MEDICAL_MODEL
         result["timestamp"] = datetime.now().isoformat()
         filepath = save_result(result, hadm_id, label)
         stats = result["statistics"]

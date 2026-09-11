@@ -33,6 +33,8 @@ def run_conversation(
     turn_warning_15 = False
     turn_warning_20 = False
     turn_warning_25 = False
+    nudge_no_tool = False
+    nudge_finalize = False
 
     if verbose:
         print(f"\n{'='*60}")
@@ -199,6 +201,23 @@ def run_conversation(
                 _print_response("PatientAgent", response)
             current_speaker = "doctor"
         else:
+            # 协议执行兜底：对医生 Agent 的轮次节奏做硬约束（6 组实验同一规则）
+            # 1) 8 轮后仍未调用任何工具 → 强制进入检查
+            if med_agent.tool_call_count == 0 and turn >= 8 and not nudge_no_tool:
+                _inject_system_nudge(
+                    "【协议执行】问诊轮次已超过8轮。你现在必须停止对话式问诊，"
+                    "立即依次调用检查工具 perform_oral_examination、perform_tcm_four_diagnosis"
+                    "（必要时加辅助检查），不要再向患者提问。"
+                )
+                nudge_no_tool = True
+            # 2) 已完成≥2次工具调用但 turn≥14 仍未提交诊断 → 强制进入诊断
+            if med_agent.tool_call_count >= 2 and turn >= 14 and not nudge_finalize:
+                _inject_system_nudge(
+                    "【协议执行】检查已完成。你现在必须立即调用 finalize_diagnosis "
+                    "提交诊断与治疗方案（primary_diagnosis、diagnosis_basis_clinical、"
+                    "western_treatment_summary、follow_up_plan 必填）。不要再向患者补充询问或讨论病情。"
+                )
+                nudge_finalize = True
             response = med_agent.chat(response.messages)
             conversation_log.append({
                 "turn": turn, "role": "MedAgent",
@@ -252,6 +271,11 @@ def _build_result(log, med_agent, patient_agent, ctx, t_start):
         },
         "completed": med_agent.completed,
         "version": "v0.1.4-dgic",
+        # ── 模型版本标注（测试结果要求：结果标注模型版本号）──
+        "model": {
+            "medical": med_agent.model,
+            "patient": patient_agent.model,
+        },
     }
 
 

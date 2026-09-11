@@ -177,6 +177,8 @@ def analyze_case(conversation_file: Path) -> dict:
         "expected_category": expected_cat,
         "statistics": data.get("statistics", {}),
         "version": data.get("version", "unknown"),
+        # ── 模型版本标注（要求：结果标注模型版本号）──
+        "model": data.get("model", {}),
     }
 
 
@@ -215,6 +217,12 @@ def evaluate_all(conversations_dir: Path = None) -> dict:
         fname = r["hadm_id"]
         by_agent["all"].append(r)
 
+    # 模型版本标注（要求：结果/对话均标注模型版本号）
+    model_line = "；".join(
+        f"{r.get('model', {}).get('medical', '?')}/{r.get('model', {}).get('patient', '?')}"
+        for r in results if r.get("model")
+    ) or "无"
+
     report_lines = [
         "=" * 70,
         "  口腔黏膜病AI诊断Agent — v0.1.3 多维度评估报告",
@@ -222,6 +230,9 @@ def evaluate_all(conversations_dir: Path = None) -> dict:
         "",
         f"评估时间: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}",
         f"总对话数: {len(results)}",
+        "",
+        "── 模型版本标注 ──",
+        f"结果/对话均标注模型版本号: {model_line}",
         "",
         "── 一、诊断完成层级 (Completion Tier) ──",
         f"  Tier 1 - 确诊 (Confirmed):           {tier_counts.get(CompletionTier.CONFIRMED, 0):>4}",

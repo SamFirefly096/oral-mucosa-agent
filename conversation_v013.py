@@ -300,6 +300,11 @@ def _build_result(log, med_agent, patient_agent, ctx, t_start):
         },
         "completed": med_agent.completed,
         "version": "v0.1.3",
+        # ── 模型版本标注（测试结果要求：结果标注模型版本号）──
+        "model": {
+            "medical": med_agent.model,
+            "patient": patient_agent.model,
+        },
     }
 
 
@@ -315,6 +320,8 @@ def save_result(result: dict, hadm_id: str):
         "statistics": result["statistics"],
         "completed": result["completed"],
         "version": result.get("version", "unknown"),
+        # ── 模型版本标注（测试结果要求：结果标注模型版本号）──
+        "model": result.get("model", {}),
     }
     clean_result["med_messages_summary"] = [
         {"role": m["role"], "content_preview": str(m.get("content", ""))[:200]}

@@ -84,7 +84,6 @@ def run_one(hadm_id: str, med_type: str, pat_type: str, patient_ctx, complaint):
             patient_context=patient_ctx, primary_complaint=complaint,
             max_turns=30, verbose=False)
         result["label"] = label
-        result["model"] = MEDICAL_MODEL
         result["timestamp"] = datetime.now().isoformat()
         filepath = save_result(result, hadm_id, label)
         stats = result["statistics"]

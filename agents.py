@@ -13,8 +13,8 @@ from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import (
-    DEEPSEEK_API_KEY,
-    DEEPSEEK_BASE_URL,
+    LLM_API_KEY,
+    LLM_BASE_URL,
     MEDICAL_MODEL,
     MEDICAL_TEMPERATURE,
     PATIENT_MODEL,
@@ -22,6 +22,7 @@ from config import (
     MAX_STEPS,
     ENABLE_THINKING,
     REASONING_EFFORT,
+    thinking_extra_param,
 )
 from database import query_table
 from tool_executors import FUNC_MAP, execute_take_history
@@ -198,7 +199,7 @@ class MedAssistant:
 
     def __init__(
         self,
-        api_key: str = DEEPSEEK_API_KEY,
+        api_key: str = LLM_API_KEY,
         model: str = MEDICAL_MODEL,
         temperature: float = MEDICAL_TEMPERATURE,
         max_steps: int = MAX_STEPS,
@@ -206,7 +207,7 @@ class MedAssistant:
     ):
         self.client = OpenAI(
             api_key=api_key,
-            base_url=DEEPSEEK_BASE_URL,
+            base_url=LLM_BASE_URL,
         )
         self.model = model
         self.temperature = temperature
@@ -288,9 +289,7 @@ class MedAssistant:
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def _call_api(self) -> dict:
         """调用 DeepSeek API"""
-        extra_body = {}
-        if self.thinking:
-            extra_body["thinking"] = {"type": "enabled"}
+        extra_body = thinking_extra_param(self.thinking)
 
         response = self.client.chat.completions.create(
             model=self.model,
@@ -421,13 +420,13 @@ class PatientAssistant:
 
     def __init__(
         self,
-        api_key: str = DEEPSEEK_API_KEY,
+        api_key: str = LLM_API_KEY,
         model: str = PATIENT_MODEL,
         temperature: float = PATIENT_TEMPERATURE,
     ):
         self.client = OpenAI(
             api_key=api_key,
-            base_url=DEEPSEEK_BASE_URL,
+            base_url=LLM_BASE_URL,
         )
         self.model = model
         self.temperature = temperature

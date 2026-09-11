@@ -10,7 +10,7 @@ from typing import Optional
 from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, ENABLE_THINKING
+from config import LLM_API_KEY, LLM_BASE_URL, ENABLE_THINKING, thinking_extra_param
 from tools import ALL_TOOLS
 
 
@@ -23,6 +23,7 @@ LEARNING_SYSTEM_PROMPT = """你是一位在口腔黏膜病专科门诊工作了1
 1. **问诊优先**：在调用任何检查工具（perform_oral_examination、perform_tcm_four_diagnosis等）之前，必须先与患者进行对话，充分采集病史。你需要先了解：主诉（部位+症状+时间）、现病史（诱因→演变→伴发症状）、既往史、用药史、过敏史。
 2. **至少2轮对话**：在首次工具调用之前，必须至少与患者进行2轮问答对话。不要一上来就开检查。
 3. **患者回答后再追问**：患者回答后，针对不明确的信息继续追问，不要一次性把所有问题都列出来等患者回答——真实患者一次只能处理有限的问题。
+4. **工具调用协议（强制）**：所有检查与诊断动作必须通过函数调用（function call）完成。严禁在回复正文中出现JSON、```代码块、或成文的"诊断与治疗方案/鉴别诊断清单"。完成问诊与必要检查后，必须立即调用 finalize_diagnosis 工具提交诊断与治疗方案（primary_diagnosis、diagnosis_basis_clinical、western_treatment_summary、follow_up_plan 为必填）。不要与患者讨论治疗方案。
 
 ## 你的临床经验（从24例典型病例中学习）
 
@@ -68,6 +69,7 @@ TEXTBOOK_SYSTEM_PROMPT = """你是一位刚完成住院医师规范化培训的�
 1. **问诊优先**：在调用任何检查工具（perform_oral_examination、perform_tcm_four_diagnosis等）之前，必须先与患者进行对话，充分采集病史。你需要先了解：主诉（部位+症状+时间）、现病史（诱因→演变→伴发症状）、既往史、用药史、过敏史。
 2. **至少2轮对话**：在首次工具调用之前，必须至少与患者进行2轮问答对话。不要一上来就开检查。
 3. **患者回答后再追问**：患者回答后，针对不明确的信息继续追问，不要一次性把所有问题都列出来等患者回答——真实患者一次只能处理有限的问题。
+4. **工具调用协议（强制）**：所有检查与诊断动作必须通过函数调用（function call）完成。严禁在回复正文中出现JSON、```代码块、或成文的"诊断与治疗方案/鉴别诊断清单"。完成问诊与必要检查后，必须立即调用 finalize_diagnosis 工具提交诊断与治疗方案（primary_diagnosis、diagnosis_basis_clinical、western_treatment_summary、follow_up_plan 为必填）。不要与患者讨论治疗方案。
 
 ## 你的知识来源（仅限教科书）
 
@@ -299,7 +301,7 @@ class BaseMedAgent:
     """共享的MedAgent基类"""
     def __init__(self, system_prompt: str, model: str = "deepseek-chat",
                  temperature: float = 0.01, thinking: bool = False):
-        self.client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL, timeout=120.0)
+        self.client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL, timeout=120.0)
         self.model = model
         self.temperature = temperature
         self.thinking = thinking
@@ -351,7 +353,7 @@ class BaseMedAgent:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def _call_api(self) -> dict:
-        extra_body = {"thinking": {"type": "enabled" if self.thinking else "disabled"}}
+        extra_body = thinking_extra_param(self.thinking)
         response = self.client.chat.completions.create(
             model=self.model, messages=self.message_history,
             tools=self.tool_schemas, tool_choice="auto",
@@ -489,6 +491,7 @@ CHIEF_SYSTEM_PROMPT = """你是一位在口腔黏膜病专科门诊工作了20�
 3. **选择性检查**：根据临床经验判断哪些辅助检查是必需的，避免过度检查，但对诊断不确定的病例应积极检查
 4. **中医辨证推理链**：舌象→病性→脉象确认→病位→证型→对照标准证型表验证，不可跳过步骤
 5. **循证诊断**：最终诊断必须列出诊断依据和参考文献（至少1条）。每条证据需说明"该表现支持本诊断的理由"。参考文献格式：作者/学会.标题.期刊/出版社,年份。遇到罕见病、不典型表现、治疗方案不确定或需查阅最新进展时，调用 search_clinical_knowledge 查询2025口腔黏膜病年会286条诊疗知识（专家意见/诊疗经验/鉴别诊断/技术创新/罕见病识别）
+6. **工具调用协议（强制）**：所有检查与诊断动作必须通过函数调用（function call）完成。严禁在回复正文中出现JSON、```代码块、或成文的"诊断与治疗方案/鉴别诊断清单"。完成问诊与必要检查后，必须立即调用 finalize_diagnosis 工具提交诊断与治疗方案（primary_diagnosis、diagnosis_basis_clinical、western_treatment_summary、follow_up_plan 为必填）。不要与患者讨论治疗方案。
 
 ## 诊疗原则
 - 经验与理论并重：先以教科书框架系统评估，再用临床经验快速锁定诊断方向
@@ -508,7 +511,7 @@ class BasePatientAgent:
     """患者Agent基类"""
     def __init__(self, system_prompt_template: str, model: str = "deepseek-chat",
                  temperature: float = 0.7, max_tokens: int = 400):
-        self.client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL, timeout=120.0)
+        self.client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL, timeout=120.0)
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -525,7 +528,7 @@ class BasePatientAgent:
         self.message_history.append({"role": "user", "content": doctor_message})
         response = self.client.chat.completions.create(
             model=self.model, messages=self.message_history,
-            temperature=self.temperature, max_tokens=self.max_tokens, extra_body={"thinking": {"type": "disabled"}})
+            temperature=self.temperature, max_tokens=self.max_tokens, extra_body=thinking_extra_param(False))
         content = response.choices[0].message.content
         self.message_history.append({"role": "assistant", "content": content})
         self.total_time += time.time() - t0
@@ -534,11 +537,11 @@ class BasePatientAgent:
 
 class OriginalPatientAgent(BasePatientAgent):
     """原始患者——条理清晰，逻辑连贯"""
-    def __init__(self, model: str = "deepseek-chat"):
-        super().__init__(system_prompt_template=ORIGINAL_PATIENT_PROMPT, model=model, temperature=0.3, max_tokens=400)
+    def __init__(self, model: str = "deepseek-chat", max_tokens: int = 400):
+        super().__init__(system_prompt_template=ORIGINAL_PATIENT_PROMPT, model=model, temperature=0.3, max_tokens=max_tokens)
 
 
 class RealisticPatientAgent(BasePatientAgent):
     """真实患者——混乱、矛盾、跑题，但回复长度受控"""
-    def __init__(self, model: str = "deepseek-chat"):
-        super().__init__(system_prompt_template=REALISTIC_PATIENT_PROMPT, model=model, temperature=0.7, max_tokens=600)
+    def __init__(self, model: str = "deepseek-chat", max_tokens: int = 600):
+        super().__init__(system_prompt_template=REALISTIC_PATIENT_PROMPT, model=model, temperature=0.7, max_tokens=max_tokens)
