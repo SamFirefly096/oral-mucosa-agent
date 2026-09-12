@@ -56,16 +56,19 @@ ENABLE_THINKING = os.getenv("MIRA_ENABLE_THINKING", "true").lower() == "true"
 REASONING_EFFORT = os.getenv("MIRA_REASONING_EFFORT", "high")  # low | medium | high | max
 
 
-def thinking_extra_param(enabled: bool) -> dict:
+def thinking_extra_param(enabled: bool, budget_tokens: int = 0) -> dict:
     """返回当前提供方约定的 thinking 参数（作为 OpenAI SDK 的 extra_body 一部分）。
 
-    - DeepSeek：{"thinking": {"type": "enabled" | "disabled"}}
-    - 讯飞星辰 MaaS（X2.5 协议）：{"thinking": "enabled" | "disabled"}（字符串枚举）
+    - DeepSeek：{"thinking": {"type": "enabled" | "disabled"}}，可带 budget_tokens 限制思考预算
+    - 讯飞星辰 MaaS（X2.5 协议）：{"thinking": "enabled" | "disabled"}（字符串枚举，不支持预算）
     """
     value = "enabled" if enabled else "disabled"
     if LLM_THINKING_WIRE == "string":
         return {"thinking": value}
-    return {"thinking": {"type": value}}
+    body = {"type": value}
+    if enabled and budget_tokens > 0:
+        body["budget_tokens"] = budget_tokens
+    return {"thinking": body}
 
 
 # ── 数据库 ────────────────────────────────────────
