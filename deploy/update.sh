@@ -89,10 +89,26 @@ sudo ls -dt "$BACKUP_DIR"/*/ 2>/dev/null | tail -n +4 | sudo xargs rm -rf 2>/dev
 
 # ── 2. 拉取最新代码 ──
 cd "$APP_DIR"
-if [ -n "$REPO_URL" ] && [ -d .git ]; then
-    info "拉取最新代码..."
-    git fetch origin "$BRANCH"
-    git reset --hard "origin/$BRANCH"
+# ⛔ 严禁 git reset --hard（2026-09-11 / 09-12 两次事故根因）：
+#    服务器上常有未提交的现场修复，reset 会把它们静默清空。
+#    默认行为改为「干净才快进、脏就只备份不动代码」；确需强制对齐远端时用 --force-reset。
+if [ -d .git ]; then
+    info "同步代码（安全模式：绝不覆盖未提交改动）..."
+    git fetch origin "$BRANCH" 2>/dev/null || warn "fetch 失败，跳过代码同步"
+    DIRTY=$(git status --porcelain | wc -l | tr -d ' ')
+    if [ "$1" = "--force-reset" ]; then
+        warn "显式 --force-reset：将丢弃本地未提交改动"
+        [ "$DIRTY" -gt 0 ] && git diff HEAD > "$BACKUP_PATH/uncommitted.patch" 2>/dev/null || true
+        git reset --hard "origin/$BRANCH"
+    elif [ "$DIRTY" -gt 0 ]; then
+        git diff HEAD > "$BACKUP_PATH/uncommitted.patch" 2>/dev/null || true
+        git status --porcelain > "$BACKUP_PATH/uncommitted-status.txt" 2>/dev/null || true
+        warn "工作区有 $DIRTY 项未提交改动：已存补丁 $BACKUP_PATH/uncommitted.patch，跳过代码覆盖"
+    elif git merge-base --is-ancestor HEAD "origin/$BRANCH" 2>/dev/null; then
+        git merge --ff-only "origin/$BRANCH" >/dev/null 2>&1 && info "已快进到 origin/$BRANCH" || warn "快进失败，保持现状"
+    else
+        warn "本地领先或分叉，跳过代码覆盖（如需强制对齐：bash update.sh --force-reset）"
+    fi
 elif [ -f wsgi.py ]; then
     info "代码已存在，执行文件级别的增量更新"
 else
