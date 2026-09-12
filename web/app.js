@@ -613,8 +613,15 @@ function renderScores(d) {
 
 function getTutorReview() {
   const btn = document.getElementById("tutorBtn");
+  const div = document.getElementById("tutorReview");
+  const label = btn.innerHTML;
   btn.disabled = true;
-  btn.textContent = "正在生成点评...";
+  btn.innerHTML = '<span class="spinner-sm"></span> 导师正在阅卷…';
+  // 立刻在结果区显示转圈：点评要 4 秒以上，先给出"正在进行"的反馈
+  div.style.display = "block";
+  div.innerHTML = '<div style="display:flex;align-items:center;gap:9px;color:#7c3aed;font-size:13px">' +
+    '<span class="spinner-sm"></span><span>导师正在阅卷：逐条核对你问过的问题…</span></div>';
+  div.scrollIntoView({ block: "center" });
   const diag = document.getElementById("diagInput").value;
   const tcm = document.getElementById("tcmInput").value;
   const treat = document.getElementById("treatInput").value;
@@ -627,11 +634,14 @@ function getTutorReview() {
     .then(r => r.json().then(d => ({ ok: r.ok, data: d })))
     .then(({ ok, data: d }) => {
       if (!ok) throw new Error(d.error || "点评失败");
-      const div = document.getElementById("tutorReview");
-      div.innerHTML = simpleMarkdown(d.review);
-      div.style.display = "block";
+      document.getElementById("tutorReview").innerHTML = simpleMarkdown(d.review);
     })
-    .catch(e => toast(e.message, "error"))
+    .catch(e => {
+      toast(e.message, "error");
+      document.getElementById("tutorReview").innerHTML =
+        '<span style="color:#b91c1c">点评生成失败：' + escapeHTML(e.message) + '。可稍后重试。</span>';
+    })
+    .finally(() => { btn.disabled = false; btn.innerHTML = label; })
     .finally(() => {
       btn.disabled = false;
       btn.textContent = "\u{1F468}\u200D\u{1F3EB} 导师点评";
