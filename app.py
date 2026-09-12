@@ -1347,10 +1347,12 @@ def tutor_review():
 
     try:
         from openai import OpenAI
-        from config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, MEDICAL_MODEL
-        client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
+        from config import LLM_API_KEY, LLM_BASE_URL, MEDICAL_MODEL, thinking_extra_param
+        client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
+        # 关闭思考并限制输出长度：原先既不关思考也不设上限，V4.1 Flash 的思考阶段会显著拖慢点评
         resp = client.chat.completions.create(
-            model=MEDICAL_MODEL, temperature=0.3,
+            model=MEDICAL_MODEL, temperature=0.3, max_tokens=900,
+            extra_body=thinking_extra_param(False),
             messages=[{"role": "user", "content": prompt}],
         )
         review = resp.choices[0].message.content

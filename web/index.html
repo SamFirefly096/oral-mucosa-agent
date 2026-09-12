@@ -18,12 +18,11 @@
   --vv-top:0px;
 }
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{height:100%;overflow:hidden}
+html,body{min-height:100%;overflow-x:hidden}   /* 页面整体可滚动，不做锁定 */
 body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--ink)}
 
 /* 应用外壳：位置固定 + visualViewport 驱动高度，键盘弹出时正确收缩 */
-.app{position:fixed;top:0;left:0;right:0;height:var(--vh);transform:translateY(var(--vv-top));
-  display:flex;flex-direction:column;background:var(--bg)}
+.app{display:flex;flex-direction:column;min-height:100vh;background:var(--bg)}
 
 /* ───────────── 顶部栏 ───────────── */
 .topbar{background:linear-gradient(130deg,#0d2b66 0%,#16408f 55%,#2563eb 115%);
@@ -43,7 +42,7 @@ body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backgr
   display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}
 
 /* ───────────── 主体 ───────────── */
-.main{flex:1;min-height:0;display:flex;flex-direction:column;width:100%;max-width:900px;margin:0 auto;padding:0}
+.main{flex:none;display:flex;flex-direction:column;width:100%;max-width:900px;margin:0 auto;padding:0}
 .tabs{display:none}
 .tabs .tab{flex:1;padding:13px 8px;text-align:center;cursor:pointer;font-size:14px;font-weight:600;border:none;
   background:transparent;color:var(--muted);display:flex;flex-direction:column;align-items:center;gap:2px}
@@ -52,7 +51,7 @@ body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backgr
 .tabs .tab.on::after{content:'';position:absolute;bottom:4px;left:50%;transform:translateX(-50%);
   width:22px;height:3px;border-radius:3px;background:var(--primary)}
 
-.panel{flex:1;min-height:0;display:flex;flex-direction:column;background:var(--card);
+.panel{flex:none;display:flex;flex-direction:column;background:var(--card);
   border-radius:var(--radius) var(--radius) 0 0;box-shadow:0 -2px 16px rgba(23,35,61,.06);position:relative;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch}
 
 /* ───────────── 病例选择条 ───────────── */
@@ -76,7 +75,7 @@ body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backgr
   border-radius:9px;cursor:pointer;flex-shrink:0}
 
 /* ───────────── 聊天区 ───────────── */
-.chat-area{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 12px 8px;scroll-behavior:smooth}
+.chat-area{flex:none;padding:14px 12px 8px;scroll-behavior:smooth}
 .chat-area.training{background:linear-gradient(180deg,#fbfbff 0%,#f4f7fc 100%)}
 .chat-area.consult{background:linear-gradient(180deg,#f0f6ff 0%,#f4f7fc 100%)}
 
@@ -343,10 +342,18 @@ body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backgr
 }
 </style>
 <style>
-/* 空间不足时：固定栏保持原高（不被 flex 压扁），改由 .main 外层上下拉动 */
-.case-bar,.status-bar,.exam-bar,.score-panel,.tabs,.bottom-tabs,.composer{flex-shrink:0}
-.main{overflow-y:auto;-webkit-overflow-scrolling:touch}
-.chat-area{min-height:150px}
+/* 页面整体滚动（不锁定）：所有元素随页面上下拉动；仅演示横幅固定 */
+.main,.panel,.chat-area{overflow:visible}
+#scrollBtn{position:fixed;right:14px;bottom:88px}   /* 回到底部按钮固定在视口 */
+/* 折叠按钮 */
+.fold-btn{flex-shrink:0;width:26px;height:26px;border-radius:8px;border:1px solid var(--line);
+  background:#fff;color:var(--muted);font-size:11px;line-height:1;cursor:pointer;padding:0;margin-left:auto}
+.fold-btn:active{background:#eef2f9}
+.fold-btn .arr{display:inline-block;transition:transform .15s}
+#caseBar.folded .case-row2{display:none}
+#caseBar.folded .fold-btn .arr,#examBar.folded .fold-btn .arr,#scorePanel.folded .fold-btn .arr{transform:rotate(-90deg)}
+#examBar.folded > :not(.tt):not(.fold-btn){display:none}
+#scorePanel.folded > :not(.sp-head){display:none}
 </style>
 </head>
 <body>
@@ -384,6 +391,7 @@ body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backgr
         <div class="case-row1">
           <span class="lbl">&#x1F4CB; 病例:</span>
           <select id="caseSelect" onchange="onCaseChange()"><option value="">-- 请选择病例 --</option></select>
+          <button class="fold-btn" onclick="toggleFold('caseBar')" title="折叠/展开"><span class="arr">&#x25BE;</span></button>
         </div>
         <div class="case-row2">
           <button class="btn-exam" onclick="randomCase()" style="border-color:#ecd9a9;color:#8a5a06;background:#fffef8">&#x1F3B2; 随机</button>
@@ -411,6 +419,7 @@ body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backgr
       <!-- 检查工具箱（横向滚动） -->
       <div id="examBar" class="exam-bar" style="display:none">
         <span class="tt">&#x1F52C; 工具箱:</span>
+        <button class="fold-btn" onclick="toggleFold('examBar')" title="折叠/展开"><span class="arr">&#x25BE;</span></button>
         <button class="btn-exam" onclick="requestExam('oral_exam')">&#x1F9B7; 口腔检查</button>
         <div class="exam-dd" id="dd-lab">
           <button class="btn-exam" onclick="toggleDD(this)">&#x1F9EA; 化验 &#x25BE;</button>
@@ -446,6 +455,7 @@ body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backgr
           <h3>&#x1F4CA; 诊断评估结果</h3>
           <span class="grade-badge" id="gradeBadge">-</span>
           <span class="sp-total" id="totalScore">总分: -</span>
+          <button class="fold-btn" onclick="toggleFold('scorePanel')" title="折叠/展开"><span class="arr">&#x25BE;</span></button>
         </div>
         <div class="score-grid">
           <div class="score-item" id="scoreDiag"><div class="v">-</div><div class="l">西医诊断 (70%)</div></div>

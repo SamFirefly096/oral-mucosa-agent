@@ -1183,21 +1183,43 @@ async function voteComment(commentId, vote) {
 /* ═══════════════ 滚动 ═══════════════ */
 function setupScrollButton() {
   if (document.getElementById("scrollBtn")) return;
-  const chat = document.getElementById("chatArea");
   const btn = document.createElement("button");
   btn.id = "scrollBtn";
   btn.innerHTML = "&#x2B07;";
   btn.title = "滚动到底部";
-  btn.onclick = () => { chat.scrollTop = chat.scrollHeight; btn.style.display = "none"; };
-  chat.appendChild(btn);
-  chat.addEventListener("scroll", () => {
-    const atBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 60;
+  btn.onclick = () => { scrollToBottom(); btn.style.display = "none"; };
+  document.body.appendChild(btn);
+  // 页面整体滚动模式下，依据窗口滚动位置决定是否显示
+  window.addEventListener("scroll", () => {
+    const d = document.documentElement;
+    const atBottom = d.scrollHeight - window.scrollY - window.innerHeight < 80;
     btn.style.display = atBottom ? "none" : "block";
-  });
+  }, { passive: true });
 }
 function scrollToBottom() {
-  const chat = document.getElementById("chatArea");
-  chat.scrollTop = chat.scrollHeight;
+  // 整页滚动：滚到文档底部（新消息在底部）
+  window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" });
+}
+
+/* ── 折叠：病例条 / 工具箱 / 评估结果（状态记忆在 localStorage） ── */
+function toggleFold(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const folded = el.classList.toggle("folded");
+  try {
+    const st = JSON.parse(localStorage.getItem("om_folds") || "{}");
+    st[id] = folded;
+    localStorage.setItem("om_folds", JSON.stringify(st));
+  } catch (e) {}
+}
+function restoreFolds() {
+  try {
+    const st = JSON.parse(localStorage.getItem("om_folds") || "{}");
+    Object.keys(st).forEach(function (id) {
+      const el = document.getElementById(id);
+      if (el && st[id]) el.classList.add("folded");
+    });
+  } catch (e) {}
 }
 
 /* ═══════════════ 键盘/全局事件 ═══════════════ */
@@ -1212,6 +1234,7 @@ document.addEventListener("keydown", e => {
 
 document.addEventListener("DOMContentLoaded", () => {
   setupScrollButton();
+  restoreFolds();
   boot();
 });
 
