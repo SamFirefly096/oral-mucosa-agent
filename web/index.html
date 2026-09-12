@@ -53,7 +53,7 @@ body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backgr
   width:22px;height:3px;border-radius:3px;background:var(--primary)}
 
 .panel{flex:1;min-height:0;display:flex;flex-direction:column;background:var(--card);
-  border-radius:var(--radius) var(--radius) 0 0;box-shadow:0 -2px 16px rgba(23,35,61,.06);position:relative;overflow:hidden}
+  border-radius:var(--radius) var(--radius) 0 0;box-shadow:0 -2px 16px rgba(23,35,61,.06);position:relative;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch}
 
 /* ───────────── 病例选择条 ───────────── */
 .case-bar{padding:9px 12px;background:var(--amber-bg);border-bottom:1px solid #f5e3b8;display:flex;
@@ -341,6 +341,12 @@ body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backgr
   .hbtn-txt{display:none}
   .hdr-actions{gap:5px}
 }
+</style>
+<style>
+/* 空间不足时：固定栏保持原高（不被 flex 压扁），改由 .main 外层上下拉动 */
+.case-bar,.status-bar,.exam-bar,.score-panel,.tabs,.bottom-tabs,.composer{flex-shrink:0}
+.main{overflow-y:auto;-webkit-overflow-scrolling:touch}
+.chat-area{min-height:150px}
 </style>
 </head>
 <body>
