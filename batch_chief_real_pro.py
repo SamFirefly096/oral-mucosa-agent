@@ -4,8 +4,8 @@ Chief×Realistic 24例测试 — deepseek-v4-pro 更新正式版 (2026-08)
 模型切换：import config 前设置环境变量（load_dotenv override=False 不覆盖已有环境变量）
 """
 import os
-os.environ["MIRA_MEDICAL_MODEL"] = "deepseek-v4-flash-vision-exp"
-os.environ["MIRA_PATIENT_MODEL"] = "deepseek-v4-flash-vision-exp"
+os.environ["MIRA_MEDICAL_MODEL"] = "deepseek-flash"
+os.environ["MIRA_PATIENT_MODEL"] = "deepseek-flash"
 
 import sys, json, time, threading
 from datetime import datetime

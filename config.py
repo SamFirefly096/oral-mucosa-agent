@@ -37,7 +37,10 @@ else:
     LLM_API_KEY = DEEPSEEK_API_KEY
     LLM_BASE_URL = DEEPSEEK_BASE_URL
     LLM_THINKING_WIRE = "object"   # DeepSeek 协议：thinking 为 {type: ...}
-    _DEFAULT_MODEL = "deepseek-v4-flash-vision-exp"
+    # 官方支持的 API 模型名只有两个：deepseek-flash（V4.1 Flash）与 deepseek-v4-pro。
+    # 早期使用的 deepseek-v4-flash-vision-exp / deepseek-v4-flash 均为其别名（服务端响应 model 字段
+    # 回显为 deepseek-flash），此处统一用规范名，避免再出现"实验名"当正式名调用。
+    _DEFAULT_MODEL = "deepseek-flash"
 
 # 模型选择（MIRA_MEDICAL_MODEL / MIRA_PATIENT_MODEL 可覆盖；xfyun 模式默认 spark-x2.5-4b）
 MEDICAL_MODEL = os.getenv("MIRA_MEDICAL_MODEL") or _DEFAULT_MODEL

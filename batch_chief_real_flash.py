@@ -1,11 +1,11 @@
 """
-Chief×Realistic 24例测试 — deepseek-v4-flash 正式版 (2026-07-31上线)
+Chief×Realistic 24例测试 — deepseek-flash 正式版 (2026-07-31上线)
 与 v0.1.4 (deepseek-v4-pro) 的 Chief×Realistic 结果对比
 模型切换：import config 前设置环境变量（load_dotenv override=False 不覆盖已有环境变量）
 """
 import os
-os.environ["MIRA_MEDICAL_MODEL"] = "deepseek-v4-flash"
-os.environ["MIRA_PATIENT_MODEL"] = "deepseek-v4-flash"
+os.environ["MIRA_MEDICAL_MODEL"] = "deepseek-flash"
+os.environ["MIRA_PATIENT_MODEL"] = "deepseek-flash"
 
 import sys, json, time, threading
 from datetime import datetime
